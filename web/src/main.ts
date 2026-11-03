@@ -9,6 +9,7 @@ import {
   type Pot,
 } from "./api";
 import { CASHU_TS_COMMIT, CASHU_TS_VERSION, CDK_GIT_REV } from "./pins";
+import { generateRefundKey, refundKeyFile } from "./refund-key";
 
 const app = document.querySelector<HTMLElement>("#app");
 if (!app) {
@@ -46,7 +47,7 @@ function banner(): HTMLElement {
   const el = document.createElement("p");
   el.className = "banner";
   el.textContent =
-    "Experimental. Regtest or Mutinynet only. This page does not create keys, lock ecash, or pay anyone.";
+    "Experimental. Regtest or Mutinynet only. This page can create a refund key and download it as a file. It does not create the server key, lock ecash, or pay anyone.";
   return el;
 }
 
@@ -84,6 +85,28 @@ async function renderHome(): Promise<void> {
     "All-or-nothing pots. Contributors lock ecash toward a target. If the target is met, the pot pays the destination committed at creation. If the deadline passes first, each contributor reclaims their own sats. The mint enforces the refund. No smart contract.",
   );
   root.append(title, lede, trust());
+
+  const btn_download_key = document.createElement("button");
+  btn_download_key.type = "button";
+  btn_download_key.className = "primary";
+  btn_download_key.textContent = "Create refund key";
+  btn_download_key.addEventListener("click", () => {
+	  const key = generateRefundKey();
+	  const pubkeyBlock = document.createElement("p");
+	  pubkeyBlock.textContent = key.pubkey;
+	  root.append(pubkeyBlock)
+	  const contents = refundKeyFile(key);
+	  const file = new Blob([contents], { type: "text/plain" });
+	  const url = URL.createObjectURL(file);
+	  const link = document.createElement("a");
+	  link.href = url;
+	  link.download = "vaca-refund-key.txt";
+	  root.append(link);
+	  link.click();
+	  link.remove();
+	  setTimeout(() => URL.revokeObjectURL(url), 0);
+  });
+  root.append(btn_download_key)
 
   let health: Health | null = null;
   try {

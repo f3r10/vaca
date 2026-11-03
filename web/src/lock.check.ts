@@ -1,5 +1,6 @@
 import { createP2PKsecret, parseP2PKSecret } from "@cashu/cashu-ts";
 import { createSecret, secretMatchesPot } from "./lock.ts";
+import { generateRefundKey } from "./refund-key.ts";
 
 const serverPubkey = "02" + "11".repeat(32);
 const refundPubkey = "03" + "22".repeat(32);
@@ -74,3 +75,10 @@ for (const [name, secret] of rejects) {
 	}
 }
 console.log("pot match holds");
+
+const refundKey = generateRefundKey();
+const refundSecret = createSecret(serverPubkey, refundKey.pubkey, locktimeUnix);
+if (!secretMatchesPot(serverPubkey, refundKey.pubkey, locktimeUnix, refundSecret)) {
+    throw new Error("generated refund key was rejected");
+}
+console.log("refund key matches");

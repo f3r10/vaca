@@ -1,0 +1,113 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f6f3ee;
+  --text: #1c1915;
+  --muted: #5c564c;
+  --card: #fffdf8;
+  --line: #d9d1c5;
+  --banner: #7a1f1f;
+  --banner-text: #fff8f4;
+  --accent: #245c45;
+  --accent-text: #f4fff8;
+  --danger: #7a1f1f;
+  font-family: "Iowan Old Style", Palatino, "Palatino Linotype", Georgia, serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #171512;
+    --text: #f3efe8;
+    --muted: #c3b8a8;
+    --card: #221f1b;
+    --line: #3c362e;
+    --accent: #8fceb0;
+    --accent-text: #10241b;
+  }
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+}
+
+#app {
+  max-width: 42rem;
+  margin: 0 auto;
+  padding: 1.25rem 1rem 3rem;
+}
+
+h1, h2, p { margin-top: 0; }
+
+h1 { font-size: 2rem; margin-bottom: 0.25rem; }
+
+a { color: inherit; }
+
+.banner {
+  background: var(--banner);
+  color: var(--banner-text);
+  padding: 0.75rem 0.9rem;
+  border-radius: 0.4rem;
+  margin-bottom: 1rem;
+}
+
+.trust, .card, form, .result {
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 0.5rem;
+  padding: 0.9rem 1rem;
+  margin: 0.75rem 0;
+}
+
+.trust p, .muted { color: var(--muted); }
+
+label, .field {
+  display: block;
+  margin: 0.7rem 0;
+}
+
+input, select, button {
+  font: inherit;
+  color: inherit;
+}
+
+input, select {
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.45rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 0.3rem;
+  background: var(--bg);
+}
+
+button, .button {
+  display: inline-block;
+  margin: 0.25rem 0.4rem 0.25rem 0;
+  padding: 0.45rem 0.7rem;
+  border-radius: 0.3rem;
+  border: 1px solid var(--line);
+  background: var(--accent);
+  color: var(--accent-text);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+button.secondary, a.button.secondary {
+  background: transparent;
+  color: var(--text);
+}
+
+.result { white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.destination, code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+
+.row { display: flex; justify-content: space-between; gap: 1rem; }
+.row span { color: var(--muted); }
+
+ul { list-style: none; padding: 0; }
+li.card a { font-weight: 700; }

@@ -1,0 +1,51 @@
+# Regtest cdk-mintd document for Vaca. CDK origin/main 24360fe5.
+# Imported with `cdk-mintd config init --new-mint`, not with `--config`
+# (that flag is rejected at startup on this revision).
+#
+# The payment backend is ldk-node. The example in-memory wallet backend is omitted.
+# Secrets are env references. Do not put mnemonics or RPC passwords here.
+# scripts/regtest-mint.sh rewrites __VACA_LDK_STORAGE_DIR__ outside the repo
+# and only does that when VACA_START_MINT=1. The skeleton run does not set it.
+
+[info]
+url = "http://127.0.0.1:8085"
+listen_host = "127.0.0.1"
+listen_port = 8085
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[info.quote_ttl]
+mint_ttl = 600
+melt_ttl = 120
+
+[mint_info]
+name = "Vaca regtest mint"
+description = "Regtest only. Not real sats. For the Vaca demo."
+description_long = "cdk-mintd with the ldk-node backend on regtest."
+
+[database]
+engine = "sqlite"
+
+[[payment_backend]]
+backend = "ldk-node"
+unit = "sat"
+min_mint = 1
+max_mint = 100000
+min_melt = 1
+max_melt = 100000
+
+[ldk_node]
+fee_percent = 0.0
+reserve_fee_min = 1
+bitcoin_network = "regtest"
+chain_source_type = "bitcoinrpc"
+ldk_node_mnemonic = "env:CDK_MINTD_LDK_NODE_MNEMONIC"
+bitcoind_rpc_host = "127.0.0.1"
+bitcoind_rpc_port = 18443
+bitcoind_rpc_user = "testuser"
+bitcoind_rpc_password = "env:CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD"
+storage_dir_path = "__VACA_LDK_STORAGE_DIR__"
+gossip_source_type = "p2p"
+ldk_node_host = "127.0.0.1"
+ldk_node_port = 8090
+webserver_host = "127.0.0.1"
+webserver_port = 0

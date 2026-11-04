@@ -15,6 +15,13 @@ export VACA_BIND="${VACA_BIND:-127.0.0.1:8787}"
 export VACA_DB_PATH="${VACA_DB_PATH:-$ROOT/data/vaca.sqlite}"
 export VACA_CORS_ORIGIN="${VACA_CORS_ORIGIN:-http://127.0.0.1:5173}"
 export VACA_MINT_URL="${VACA_MINT_URL:-}"
+# Absolute path. Bash does not expand "~" inside quotes, and the server
+# stores the string as given. A quoted tilde looks for a directory named "~".
+if [[ "${VACA_SERVER_KEY_PATH:-}" == "~"* ]]; then
+  echo "VACA_SERVER_KEY_PATH must be an absolute path. A leading ~ is not expanded." >&2
+  exit 1
+fi
+export VACA_SERVER_KEY_PATH="${VACA_SERVER_KEY_PATH:-$HOME/.vaca/server-key.txt}"
 
 echo "Building the API and the page. No mint is started."
 cargo build --manifest-path "$ROOT/server/Cargo.toml"

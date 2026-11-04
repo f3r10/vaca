@@ -74,6 +74,21 @@ On that revision, `cdk-mintd --config` is rejected. The operator imports `script
 
 Mint files go under `~/.vaca/regtest-mint/` (override with `VACA_MINT_WORK_DIR` and `VACA_LDK_STORAGE_DIR`). Both directories must sit outside this repo.
 
+## Later: page layout
+
+The page works as a sequence of controls, and it is hard to use. This pass is
+layout and wording only. Do not change `createSecret`, `secretMatchesPot`, or
+the 501 routes while doing it.
+
+- The trust text is repeated in full on the home page and on every pot, above the action.
+- "Create refund key" has no section around it. Each click adds another pubkey paragraph.
+- On a pot, the button says "generate". The field label is "compresed pubkey". Alerts are extra `h1` and `h2` elements, and each click adds more of them.
+- A failed `createSecret` has no message on the page.
+- The secret is shown with no label. Long pubkeys and secrets need a place to wrap.
+- There is no `primary` style. The home page is a stack of unrelated blocks.
+
+Done when a new visitor can create a refund key, open a pot, and build a lock without reading the source. The private key stays off the page, out of the URL, and out of `localStorage`.
+
 ## Not in this skeleton
 
 Live `/v1/info` was not fetched. No mint was running, and this session did not start one. v2 co-signing, strict lock verification, and the split-the-bill payout rules come later. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.

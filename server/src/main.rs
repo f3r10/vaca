@@ -3,6 +3,7 @@ mod db;
 mod error;
 mod http;
 mod pot;
+mod lock;
 
 use std::sync::{Arc, Mutex};
 

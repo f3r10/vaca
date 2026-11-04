@@ -8,8 +8,11 @@ import {
   type Health,
   type Pot,
 } from "./api";
+import { createSecret, secretMatchesPot } from "./lock";
 import { CASHU_TS_COMMIT, CASHU_TS_VERSION, CDK_GIT_REV } from "./pins";
 import { generateRefundKey, refundKeyFile } from "./refund-key";
+
+let refundPubkey: string | null = null;
 
 const app = document.querySelector<HTMLElement>("#app");
 if (!app) {
@@ -92,6 +95,7 @@ async function renderHome(): Promise<void> {
   btn_download_key.textContent = "Create refund key";
   btn_download_key.addEventListener("click", () => {
 	  const key = generateRefundKey();
+	  refundPubkey = key.pubkey;
 	  const pubkeyBlock = document.createElement("p");
 	  pubkeyBlock.textContent = key.pubkey;
 	  root.append(pubkeyBlock)
@@ -285,6 +289,35 @@ async function renderPot(id: string): Promise<void> {
   try {
     const pot = await getPot(id);
     root.append(potCard(pot), moneyActions(pot));
+    const pubkey = field("compresed pubkey", "text", "pubkey");
+    const pubkeySection = document.createElement("section");
+    pubkeySection.append(pubkey)
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "secondary";
+    button.textContent = "generate";
+    button.addEventListener("click", () => {
+	    if (refundPubkey == null) {
+		    const messagealert = document.createElement("h1");
+		    messagealert.textContent = "Create a refund key on the home page first.";
+		    pubkeySection.append(messagealert)
+	    } else {
+		    const serverPubkey = valueOf(pubkey);
+		    const secret = createSecret(serverPubkey, refundPubkey, pot.locktime_unix);
+		    const secretSection = document.createElement("h2");
+		    secretSection.textContent = secret;
+		    pubkeySection.append(secretSection)
+		    const isPot = secretMatchesPot(serverPubkey, refundPubkey, pot.locktime_unix, secret);
+		    if (isPot) {
+			    const isPotSection = document.createElement("h1");
+			    isPotSection.textContent = "matches";
+			    pubkeySection.append(isPotSection)
+		    }
+
+	    }
+    });
+    pubkeySection.append(button);
+    root.append(pubkeySection)
   } catch (err) {
     root.append(note(errorText(err)));
   }

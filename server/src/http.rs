@@ -5,7 +5,7 @@ use axum::http::{HeaderValue, Method, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use rusqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::config::{
@@ -14,6 +14,7 @@ use crate::config::{
 };
 use crate::db;
 use crate::error::ApiError;
+use crate::lock;
 use crate::pot::{self, CreatePotRequest, PotView};
 
 #[derive(Clone)]
@@ -63,10 +64,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/health", get(health))
         .route("/api/pots", get(list_pots).post(create_pot))
         .route("/api/pots/{id}", get(get_pot))
-        .route(
-            "/api/pots/{id}/contributions",
-            post(contributions_unimplemented),
-        )
+        .route("/api/pots/{id}/contributions", post(post_contribution))
         .route("/api/pots/{id}/payout", post(payout_unimplemented))
         .route("/api/pots/{id}/refunds", post(refunds_unimplemented))
         .fallback(not_found)
@@ -134,11 +132,31 @@ async fn create_pot(
     Ok((StatusCode::CREATED, Json(stored.view())))
 }
 
-async fn contributions_unimplemented(
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ContributionLock {
+    refund_pubkey: String,
+    secret: String,
+}
+
+async fn post_contribution(
     State(state): State<AppState>,
     Path(id): Path<String>,
+    Json(body): Json<ContributionLock>,
 ) -> Result<(), ApiError> {
-    refuse_money_route(&state, &id, "contributions")
+    let pot = require_pot(&state, &id)?;
+    let accepted = lock::contribution_lock_ok(
+        state.config.server_pubkey.as_deref(),
+        pot.view().locktime_unix,
+        &body.refund_pubkey,
+        &body.secret,
+    );
+    if !accepted {
+        return Err(ApiError::BadRequest(
+            "The secret is not this pot's lock.".to_string(),
+        ));
+    }
+    Err(ApiError::NotImplemented("contributions"))
 }
 
 async fn payout_unimplemented(
@@ -187,6 +205,10 @@ mod tests {
     use tower::ServiceExt;
 
     fn test_app() -> (Router, std::path::PathBuf) {
+        test_app_with(None)
+    }
+
+    fn test_app_with(server_pubkey: Option<String>) -> (Router, std::path::PathBuf) {
         let path = std::env::temp_dir().join(format!("vaca-http-{}.sqlite", uuid::Uuid::new_v4()));
         let config = Config {
             bind: "127.0.0.1:9".parse().unwrap(),
@@ -197,7 +219,7 @@ mod tests {
             cors_origin: "http://127.0.0.1:5173".to_string(),
             experimental: true,
             server_key_path: None,
-            server_pubkey: None,
+            server_pubkey,
         };
         let connection = db::open(&path).expect("db");
         let state = AppState {
@@ -329,14 +351,15 @@ mod tests {
         )
         .await;
         let id = created["id"].as_str().unwrap();
-        for route in ["contributions", "payout", "refunds"] {
+        let proofs = serde_json::json!({
+            "proofs": [{"secret": "not-a-real-secret", "witness": {"signatures": ["aa"]}}]
+        });
+        for route in ["payout", "refunds"] {
             let response = app
                 .clone()
                 .oneshot(post_json(
                     &format!("/api/pots/{id}/{route}"),
-                    serde_json::json!({
-                        "proofs": [{"secret": "not-a-real-secret", "witness": {"signatures": ["aa"]}}]
-                    }),
+                    proofs.clone(),
                 ))
                 .await
                 .unwrap();
@@ -346,6 +369,12 @@ mod tests {
             assert_eq!(body["route"], route);
             assert_eq!(body["owner"], "Y");
         }
+        let rejected = app
+            .clone()
+            .oneshot(post_json(&format!("/api/pots/{id}/contributions"), proofs))
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let fetched = json_body(
             app.oneshot(
                 Request::builder()
@@ -360,6 +389,112 @@ mod tests {
         assert_eq!(fetched["contribution_count"], 0);
         assert_eq!(fetched["status"], "open");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn contribution_rejects_a_bad_lock_and_does_not_store_a_good_one() {
+        let server = compressed("02", "11");
+        let refund = compressed("03", "22");
+        let (app, path) = test_app_with(Some(server.clone()));
+        let created = json_body(
+            app.clone()
+                .oneshot(post_json(
+                    "/api/pots",
+                    serde_json::json!({
+                        "title": "Cause",
+                        "kind": "cause",
+                        "target_sats": 1,
+                        "deadline_unix": now_unix() + 86_400,
+                        "destination": "lno1qq"
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        let id = created["id"].as_str().unwrap();
+        let locktime = created["locktime_unix"].as_i64().unwrap();
+        let other = v1_secret(&compressed("02", "44"), &refund, locktime);
+        let bad = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/contributions"),
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "secret": other,
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(bad.status(), StatusCode::BAD_REQUEST);
+        let bad_body = json_body(bad).await;
+        assert_eq!(bad_body["message"], "The secret is not this pot's lock.");
+        assert!(!bad_body.to_string().contains(&other));
+
+        let missing = app
+            .clone()
+            .oneshot(post_json(
+                "/api/pots/missing-pot/contributions",
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "secret": v1_secret(&server, &refund, locktime),
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+        let good_secret = v1_secret(&server, &refund, locktime);
+        let good = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/contributions"),
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "secret": good_secret,
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(good.status(), StatusCode::NOT_IMPLEMENTED);
+        let good_body = json_body(good).await;
+        assert_eq!(good_body["error"], "not_implemented");
+        assert_eq!(good_body["route"], "contributions");
+        assert!(!good_body.to_string().contains(&good_secret));
+
+        let fetched = json_body(
+            app.oneshot(
+                Request::builder()
+                    .uri(format!("/api/pots/{id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert_eq!(fetched["contribution_count"], 0);
+        assert_eq!(fetched["status"], "open");
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn compressed(prefix: &str, byte: &str) -> String {
+        format!("{prefix}{}", byte.repeat(32))
+    }
+
+    fn v1_secret(server: &str, refund: &str, locktime: i64) -> String {
+        serde_json::json!([
+            "P2PK",
+            {
+                "nonce": "aa",
+                "data": server,
+                "tags": [
+                    ["locktime", locktime.to_string()],
+                    ["refund", refund]
+                ]
+            }
+        ])
+        .to_string()
     }
 
     #[tokio::test]

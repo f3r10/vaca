@@ -147,6 +147,7 @@ function healthCard(health: Health): HTMLElement {
     line("Counts contributions", health.counts_contributions ? "yes" : "no"),
     line("Server key path set", health.server_key_path_set ? "yes" : "no"),
     line("Server key file present", health.server_key_file_present ? "yes" : "no"),
+    line("Server pubkey set", health.server_pubkey_set ? "yes" : "no"),
     line("CDK linked into this binary", health.cdk_linked ? "yes" : "no"),
     paragraph(`CDK pin ${health.cdk_rev}. cashu-ts ${health.cashu_ts} (${health.cashu_ts_commit}). The page does not call cashu-ts.`),
   );

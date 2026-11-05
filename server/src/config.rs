@@ -33,6 +33,8 @@ pub struct Config {
     pub experimental: bool,
     /// Location of the server key. The file is never opened or logged.
     pub server_key_path: Option<PathBuf>,
+    /// Compressed public key from `VACA_SERVER_PUBKEY`. The key file is not read.
+    pub server_pubkey: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -75,6 +77,7 @@ impl Config {
             Ok(value) if !value.trim().is_empty() => Some(PathBuf::from(value)),
             _ => None,
         };
+        let server_pubkey = server_pubkey_from_env()?;
         Ok(Config {
             bind,
             mint_url,
@@ -84,6 +87,7 @@ impl Config {
             cors_origin,
             experimental,
             server_key_path,
+            server_pubkey,
         })
     }
 
@@ -103,6 +107,33 @@ impl Config {
             file_present,
         }
     }
+}
+
+fn server_pubkey_from_env() -> Result<Option<String>, String> {
+    let raw = match env::var("VACA_SERVER_PUBKEY") {
+        Ok(value) => value,
+        Err(env::VarError::NotPresent) => return Ok(None),
+        Err(env::VarError::NotUnicode(_)) => {
+            return Err("VACA_SERVER_PUBKEY is not valid Unicode".to_string());
+        }
+    };
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Ok(None);
+    }
+    let lowered = trimmed.to_ascii_lowercase();
+    let bytes = lowered.as_bytes();
+    let compressed = bytes.len() == 66
+        && bytes[0] == b'0'
+        && (bytes[1] == b'2' || bytes[1] == b'3')
+        && bytes[2..].iter().all(u8::is_ascii_hexdigit);
+    if !compressed {
+        return Err(
+            "VACA_SERVER_PUBKEY must be a 66-character compressed hex key (02 or 03, then 64 hex digits)"
+                .to_string(),
+        );
+    }
+    Ok(Some(lowered))
 }
 
 fn validate_mint_url(mint_url: &str) -> Result<(), String> {
@@ -170,6 +201,7 @@ mod tests {
         assert_eq!(config.grace_seconds, 600);
         assert!(config.experimental);
         assert!(config.server_key_path.is_none());
+        assert!(config.server_pubkey.is_none());
         assert_eq!(
             config.server_key_status(),
             ServerKeyStatus {
@@ -229,6 +261,35 @@ mod tests {
         unsafe { env::remove_var("VACA_SERVER_KEY_PATH") };
     }
 
+    #[test]
+    fn server_pubkey_comes_from_the_environment_not_the_key_file() {
+        let _guard = lock_env();
+        clear_vaca_env();
+        let pubkey = format!("02{}", "ab".repeat(32));
+        unsafe {
+            env::set_var(
+                "VACA_SERVER_PUBKEY",
+                format!("  {}  ", pubkey.to_ascii_uppercase()),
+            )
+        };
+        let config = Config::from_env().expect("pubkey");
+        assert_eq!(config.server_pubkey.as_deref(), Some(pubkey.as_str()));
+        assert!(config.server_key_path.is_none());
+        unsafe { env::remove_var("VACA_SERVER_PUBKEY") };
+
+        unsafe { env::set_var("VACA_SERVER_PUBKEY", "   ") };
+        let blank = Config::from_env().expect("blank");
+        assert!(blank.server_pubkey.is_none());
+        unsafe { env::remove_var("VACA_SERVER_PUBKEY") };
+
+        let not_a_key = "ab".repeat(32);
+        unsafe { env::set_var("VACA_SERVER_PUBKEY", &not_a_key) };
+        let error = Config::from_env().expect_err("pubkey");
+        assert!(error.contains("66-character"));
+        assert!(!error.contains(&not_a_key));
+        unsafe { env::remove_var("VACA_SERVER_PUBKEY") };
+    }
+
     fn clear_vaca_env() {
         for name in [
             "VACA_BIND",
@@ -239,6 +300,7 @@ mod tests {
             "VACA_CORS_ORIGIN",
             "VACA_EXPERIMENTAL",
             "VACA_SERVER_KEY_PATH",
+            "VACA_SERVER_PUBKEY",
         ] {
             unsafe { env::remove_var(name) };
         }

@@ -52,7 +52,7 @@ cargo test --manifest-path server/Cargo.toml
 curl -sS http://127.0.0.1:8787/api/health
 ```
 
-`VACA_BIND`, `VACA_DB_PATH`, `VACA_MINT_URL`, and `VACA_CORS_ORIGIN` override the defaults. Leave the mint URL empty until a mint exists. The sqlite file defaults to `data/vaca.sqlite` and is gitignored. The process logs whether a server-key path is set. It does not log the path or open the file.
+`VACA_BIND`, `VACA_DB_PATH`, `VACA_MINT_URL`, and `VACA_CORS_ORIGIN` override the defaults. Leave the mint URL empty until a mint exists. The sqlite file defaults to `data/vaca.sqlite` and is gitignored. The process logs whether a server-key path is set. It does not log the path or open the file. `VACA_SERVER_PUBKEY`, when set, is the compressed public key the server-key script printed. Startup stores that string. It does not open the key file to find the public key.
 
 Creating a pot:
 

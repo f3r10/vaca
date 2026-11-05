@@ -48,6 +48,21 @@ pub(crate) fn secret_matches_pot(
     pubkey_x(&refund).as_deref() == Some(refund_x.as_str())
 }
 
+pub(crate) fn contribution_lock_ok(
+    server_pubkey: Option<&str>,
+    pot_locktime_unix: i64,
+    refund_pubkey: &str,
+    secret: &str,
+) -> bool {
+    let Some(server_pubkey) = server_pubkey else {
+        return false;
+    };
+    let Ok(locktime) = u64::try_from(pot_locktime_unix) else {
+        return false;
+    };
+    secret_matches_pot(server_pubkey, refund_pubkey, locktime, secret)
+}
+
 fn pubkey_x(pubkey: &str) -> Option<String> {
     let trimmed = pubkey.trim().to_ascii_lowercase();
     let bytes = trimmed.as_bytes();
@@ -121,6 +136,54 @@ mod tests {
             &refund,
             LOCKTIME,
             &flipped
+        ));
+    }
+
+    #[test]
+    fn contribution_lock_uses_the_configured_key_and_the_pot_locktime() {
+        let server = key("02", "11");
+        let other = key("02", "44");
+        let refund = key("03", "22");
+        let secret = p2pk(
+            &server,
+            "aa",
+            &[tag("locktime", "1800000000"), tag("refund", &refund)],
+        );
+        let locked_to_other = p2pk(
+            &other,
+            "aa",
+            &[tag("locktime", "1800000000"), tag("refund", &refund)],
+        );
+        let other_locktime = p2pk(
+            &server,
+            "aa",
+            &[tag("locktime", "1800000001"), tag("refund", &refund)],
+        );
+
+        assert!(!contribution_lock_ok(
+            None,
+            LOCKTIME as i64,
+            &refund,
+            &secret
+        ));
+        assert!(!contribution_lock_ok(
+            Some(&server),
+            LOCKTIME as i64,
+            &refund,
+            &locked_to_other
+        ));
+        assert!(!contribution_lock_ok(
+            Some(&server),
+            LOCKTIME as i64,
+            &refund,
+            &other_locktime
+        ));
+        assert!(!contribution_lock_ok(Some(&server), -1, &refund, &secret));
+        assert!(contribution_lock_ok(
+            Some(&server),
+            LOCKTIME as i64,
+            &refund,
+            &secret
         ));
     }
 

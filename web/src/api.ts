@@ -9,6 +9,7 @@ export interface Health {
   sigflag_v2: string;
   server_key_path_set: boolean;
   server_key_file_present: boolean;
+  server_pubkey_set: boolean;
   counts_contributions: boolean;
   cdk_rev: string;
   cdk_linked: boolean;

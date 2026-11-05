@@ -2,8 +2,8 @@ mod config;
 mod db;
 mod error;
 mod http;
-mod pot;
 mod lock;
+mod pot;
 
 use std::sync::{Arc, Mutex};
 
@@ -29,6 +29,7 @@ async fn main() {
         mint_url_set = !config.mint_url.is_empty(),
         server_key_path_set = key.path_set,
         server_key_file_present = key.file_present,
+        server_pubkey_set = config.server_pubkey.is_some(),
         max_pot_sats = config.max_pot_sats,
         grace_seconds = config.grace_seconds,
         db_path = %config.db_path.display(),

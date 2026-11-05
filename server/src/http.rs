@@ -34,6 +34,8 @@ struct Health {
     sigflag_v2: &'static str,
     server_key_path_set: bool,
     server_key_file_present: bool,
+    /// The public key from the environment. The key file is not read.
+    server_pubkey_set: bool,
     /// Proofs are not counted. The contributions table stays empty.
     counts_contributions: bool,
     cdk_rev: &'static str,
@@ -93,6 +95,7 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
         sigflag_v2: SIGFLAG_V2,
         server_key_path_set: key.path_set,
         server_key_file_present: key.file_present,
+        server_pubkey_set: state.config.server_pubkey.is_some(),
         counts_contributions: false,
         cdk_rev: CDK_GIT_REV,
         cdk_linked: false,
@@ -194,6 +197,7 @@ mod tests {
             cors_origin: "http://127.0.0.1:5173".to_string(),
             experimental: true,
             server_key_path: None,
+            server_pubkey: None,
         };
         let connection = db::open(&path).expect("db");
         let state = AppState {
@@ -240,6 +244,7 @@ mod tests {
         assert_eq!(body["sigflag_v1"], "SIG_INPUTS");
         assert_eq!(body["sigflag_v2"], "SIG_ALL");
         assert_eq!(body["counts_contributions"], false);
+        assert_eq!(body["server_pubkey_set"], false);
         assert_eq!(body["cdk_linked"], false);
         assert_eq!(body["cashu_ts"], "5.0.0-rc.12");
         let _ = std::fs::remove_file(path);

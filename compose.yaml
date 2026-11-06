@@ -1,0 +1,18 @@
+# Regtest bitcoind only. cdk-mintd and scripts/demo.sh stay on the host.
+# The RPC password is CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD. It is not stored here.
+name: vaca
+
+services:
+  bitcoind:
+    build: ./scripts/bitcoind
+    image: vaca-bitcoind:29.5
+    environment:
+      CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD: ${CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD:?set CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD}
+    ports:
+      - "127.0.0.1:18443:18443"
+      - "127.0.0.1:18444:18444"
+    volumes:
+      - vaca-bitcoind:/home/bitcoin/.bitcoin
+
+volumes:
+  vaca-bitcoind:

@@ -20,7 +20,7 @@ Do not use the fake_wallet backend. Secrets stay in the environment:
 CDK_MINTD_MNEMONIC, CDK_MINTD_LDK_NODE_MNEMONIC,
 CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD.
 A regtest bitcoind must already be listening on 127.0.0.1:18443.
-This script does not start bitcoind.
+Use the ldk-lab bitcoind (RPC user ldk). This script does not start bitcoind.
 EOF
   exit 0
 fi

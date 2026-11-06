@@ -41,11 +41,12 @@ chain_source_type = "bitcoinrpc"
 ldk_node_mnemonic = "env:CDK_MINTD_LDK_NODE_MNEMONIC"
 bitcoind_rpc_host = "127.0.0.1"
 bitcoind_rpc_port = 18443
-bitcoind_rpc_user = "testuser"
+bitcoind_rpc_user = "ldk"
 bitcoind_rpc_password = "env:CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD"
 storage_dir_path = "__VACA_LDK_STORAGE_DIR__"
 gossip_source_type = "p2p"
-ldk_node_host = "127.0.0.1"
+# 0.0.0.0 so an ldk-lab container can dial host.docker.internal:8090.
+ldk_node_host = "0.0.0.0"
 ldk_node_port = 8090
 webserver_host = "127.0.0.1"
 webserver_port = 0

@@ -68,11 +68,88 @@ The split-the-bill control on the page fills a two-hour deadline and labels the 
 
 ## Regtest mint script
 
-`scripts/regtest-mint.sh` prints `mint_started=no` and exits unless `VACA_START_MINT=1`. It was written against CDK `24360fe5` and was not run.
+`scripts/regtest-mint.sh` prints `mint_started=no` and exits unless `VACA_START_MINT=1`. It targets CDK `24360fe5`.
 
-On that revision, `cdk-mintd --config` is rejected. The operator imports `scripts/regtest-mint.config.toml` with `config init --new-mint`, then starts `cdk-mintd --work-dir`. The document sets `bitcoin_network = "regtest"`, `chain_source_type = "bitcoinrpc"`, RPC `127.0.0.1:18443`, and `backend = "ldk-node"`. Mnemonics and the RPC password are `env:` references. The script does not start bitcoind, and it does not build CDK. Point `CDK_MINTD_BIN` at a binary built from that revision with the ldk-node feature. The checkout at `~/projects/cdk` is older than this CLI.
+On that revision, `cdk-mintd --config` is rejected. The operator imports `scripts/regtest-mint.config.toml` with `config init --new-mint`, then starts `cdk-mintd --work-dir`. The document sets `bitcoin_network = "regtest"`, `chain_source_type = "bitcoinrpc"`, RPC `127.0.0.1:18443`, and `backend = "ldk-node"`. Mnemonics and the RPC password are `env:` references. The script does not start bitcoind, and it does not build CDK. Regtest bitcoind is the ldk-lab one, RPC user `ldk`, on `127.0.0.1:18443`. Set `CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD` to that lab password. The mint listens for Lightning on `0.0.0.0:8090` so a lab container can reach it. The mint and the demo stay on the host. Point `CDK_MINTD_BIN` at a binary built from that revision with the ldk-node feature. The checkout at `~/projects/cdk` is older than this CLI.
 
 Mint files go under `~/.vaca/regtest-mint/` (override with `VACA_MINT_WORK_DIR` and `VACA_LDK_STORAGE_DIR`). Both directories must sit outside this repo.
+
+## Dev: pay a mint quote from node A
+
+A mint quote is a BOLT11 invoice. The mint's own Lightning node cannot pay it, and `bitcoin-cli` cannot pay it either. Lab node A is the payer. Node B stays stopped. These commands are for fish. They fund node A on the lab chain, open a channel to the mint, and pay one quote. A paid quote has `state` `PAID` and `amount_issued` `0`. It does not mint proofs or post a contribution.
+
+Leave the mint process running. Do not start this repo's compose bitcoind beside the lab one. Both want port 18443. Do not run `~/projects/ldk-lab/scripts/fund`. That script waits for node B. Do not delete `~/projects/ldk-lab/data/a`. That directory is node A's wallet. If node A reports that the chain does not match, stop and read the error.
+
+One chain, already listening:
+
+```fish
+cd ~/projects/ldk-lab
+./scripts/compose up -d bitcoind
+```
+
+RPC user is `ldk`. Set `CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD` to the password in the lab compose file. Do not print it.
+
+Build `cdk-mintd` from `~/projects/cdk-nutnov` at `24360fe5` with `--features ldk-node`. `~/projects/cdk` is older. In the mint shell, set two different quoted 12-word phrases. Fish keeps only the first word of an unquoted value.
+
+```fish
+set -gx CDK_MINTD_BIN $HOME/projects/cdk-nutnov/target/debug/cdk-mintd
+set -gx CDK_MINTD_MNEMONIC "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12"
+set -gx CDK_MINTD_LDK_NODE_MNEMONIC "word1 word2 word3 word4 word5 word6 word7 word8 word9 word10 word11 word12"
+set -gx CDK_MINTD_LDK_BITCOIND_RPC_PASSWORD <lab rpc password>
+echo (count (string split " " -- $CDK_MINTD_MNEMONIC))
+echo (count (string split " " -- $CDK_MINTD_LDK_NODE_MNEMONIC))
+```
+
+Each count must print 12. From `~/projects/vaca`:
+
+```fish
+VACA_START_MINT=1 ./scripts/regtest-mint.sh
+```
+
+Cashu listens on `127.0.0.1:8085`. Lightning listens on `0.0.0.0:8090`. Fee-estimate lines that fall back to 1 sat/vb are expected on this regtest chain. Confirm the mint before paying:
+
+```fish
+curl -sS http://127.0.0.1:8085/v1/info | jq '.nuts["11"].supported, [.nuts["5"].methods[].method], .nuts["25"]'
+```
+
+Wanted: `true`, `bolt11` and `bolt12`, and `null`. A second start does not import the template again while `~/.vaca/regtest-mint/mintd/cdk-mintd.sqlite` exists. To recreate the mint on this chain, stop it and delete `~/.vaca/regtest-mint/ldk-node` plus `cdk-mintd.sqlite`, `cdk-mintd.sqlite-wal`, and `cdk-mintd.sqlite-shm`. Leave `~/.vaca/server-key.txt`.
+
+Node A uses the lab's existing `data/a`. Leave `LDK_SERVER_DIR` unset so `./scripts/compose` builds `../ldk-server-review`. The first `up` compiles the image.
+
+```fish
+cd ~/projects/ldk-lab
+./scripts/compose up -d node-a
+./scripts/cli a get-node-info
+./scripts/cli a get-balances
+```
+
+Wait until `get-node-info` answers and its height has caught the chain. If `spendable_onchain_balance_sats` is `0`, mine a mature coinbase, then check again:
+
+```fish
+./scripts/mine 101 a
+./scripts/cli a get-balances
+```
+
+Copy the mint node id from the mint log line `Created node <id> with address`. The same Lightning mnemonic keeps the same id. Open a private channel and leave the balance on node A. From inside the container the mint is `host.docker.internal:8090`.
+
+```fish
+set mint_id <id from that line>
+./scripts/cli a open-channel $mint_id host.docker.internal:8090 100000sat
+./scripts/mine 6 a
+./scripts/cli a list-channels
+```
+
+Repeat `list-channels` until `is_usable` is true. Create the quote after that, then pay the `request` field. Fish does not split `$invoice`.
+
+```fish
+set resp (curl -s -X POST http://127.0.0.1:8085/v1/mint/quote/bolt11 -H 'content-type: application/json' -d '{"amount":100,"unit":"sat"}')
+set quote_id (echo $resp | python3 -c 'import json,sys; print(json.load(sys.stdin)["quote"])')
+set invoice (echo $resp | python3 -c 'import json,sys; print(json.load(sys.stdin)["request"])')
+./scripts/cli a bolt11-send $invoice
+curl -sS http://127.0.0.1:8085/v1/mint/quote/bolt11/$quote_id
+```
+
+The quote object should show `amount` 100, `amount_paid` 100, `amount_issued` 0, and `state` `PAID`.
 
 ## Later: page layout
 
@@ -91,7 +168,7 @@ Done when a new visitor can create a refund key, open a pot, and build a lock wi
 
 ## Not in this skeleton
 
-Live `/v1/info` was not fetched. No mint was running, and this session did not start one. v2 co-signing, strict lock verification, and the split-the-bill payout rules come later. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
+A paid regtest quote does not mint proofs or post a contribution. v2 co-signing, strict lock verification, and the split-the-bill payout rules come later. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
 
 Local git only. No remote.
 

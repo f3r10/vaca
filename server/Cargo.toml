@@ -4,10 +4,13 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 publish = false
-description = "HTTP plumbing for Vaca pots. No NUT-11, signing, or melt code."
+description = "HTTP API for Vaca pots. Counts a checked proof. Does not sign, melt, or refund."
 
 [dependencies]
 axum = "0.8"
+# crates.io release that matches CDK 24360fe5. Not a path dependency.
+cashu = { version = "=0.18.0", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.37", features = ["bundled"] }

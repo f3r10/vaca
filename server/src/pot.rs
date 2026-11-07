@@ -40,6 +40,7 @@ pub struct PotView {
     pub status: String,
     pub created_at_unix: i64,
     pub contribution_count: i64,
+    pub locked_sats: u64,
     /// Display only. This is not a NUT-11 secret.
     pub locktime_unix: i64,
     /// The server stops co-signing here. Co-signing is not implemented.
@@ -62,6 +63,7 @@ pub struct StoredPot {
     pub status: String,
     pub created_at_unix: i64,
     pub contribution_count: i64,
+    pub locked_sats: u64,
 }
 
 impl StoredPot {
@@ -77,6 +79,7 @@ impl StoredPot {
             status: self.status.clone(),
             created_at_unix: self.created_at_unix,
             contribution_count: self.contribution_count,
+            locked_sats: self.locked_sats,
             locktime_unix: self.deadline_unix.saturating_add(GRACE_SECONDS as i64),
             co_sign_until_unix: self.deadline_unix,
             grace_seconds: GRACE_SECONDS,
@@ -207,8 +210,10 @@ mod tests {
             status: "open".to_string(),
             created_at_unix: NOW,
             contribution_count: 0,
+            locked_sats: 0,
         };
         let view = stored.view();
+        assert_eq!(view.locked_sats, 0);
         assert_eq!(view.locktime_unix, view.deadline_unix + 600);
         assert_eq!(view.co_sign_until_unix, view.deadline_unix);
         assert_eq!(view.fee_reserve_recipient, "organizer");

@@ -2,7 +2,7 @@
 
 Vaca is an experimental web app for all-or-nothing pots: a cause, a shared purchase, or splitting a bill. Contributors lock ecash toward a target before a deadline. If the target is met, the pot pays a Lightning destination that was committed when the pot was created. If the deadline passes first, each contributor reclaims their own sats, because the mint enforces a NUT-11 refund key. There is no smart contract.
 
-This repository is the skeleton. It stores pots and refuses the money routes. It does not build locks, verify proofs, sign, melt, or refund.
+This repository stores pots. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. Payout and refund still return 501. The server does not sign, melt, or refund.
 
 Regtest or Mutinynet only. The hard cap is 100,000 sats per pot.
 
@@ -12,7 +12,7 @@ v1, the first version that moves sats: the server key is the only pot key (`n_si
 
 v2, the pitch: the organizer and the server both sign (`n_sigs = 2`). The server co-signs only when the locked total covers the target plus the melt fee reserve, and only for the destination stored at creation. Neither signature is enough on its own. If the organizer and the server both agree, they can still spend, including after the deadline, and they can win the race against refunds.
 
-After the lock time the mint accepts both paths. It settles whichever valid spend it sees first. Contributors should reclaim as soon as the lock expires. The mint is trusted, as with any Cashu mint. Losing the refund key loses the refund. A secret with no refund key can be spent by anyone after the deadline. A malformed lock cannot be spent. The mint does not check that a secret belongs to this pot; the server has to verify that before it counts a proof. That check is not written yet.
+After the lock time the mint accepts both paths. It settles whichever valid spend it sees first. Contributors should reclaim as soon as the lock expires. The mint is trusted, as with any Cashu mint. Losing the refund key loses the refund. A secret with no refund key can be spent by anyone after the deadline. A malformed lock cannot be spent. The mint does not check that a secret belongs to this pot. The contributions route does that check, then asks the mint that the proof is signed and unspent, before it counts the sats.
 
 A refund backup will be a file the browser downloads. A URL that contains the key would leak it.
 
@@ -27,15 +27,15 @@ A refund backup will be a file the browser downloads. A URL that contains the ke
 
 C, in this repo now: the crate, the Vite + TypeScript page, HTTP and sqlite plumbing, CORS, the demo script, and the regtest mint script.
 
-Y, not in this repo yet: NUT-11 lock construction, the pot state machine, the target-met check including the fee reserve, multi-party signing, the refund flow, and browser key handling. `POST /api/pots/{id}/contributions`, `/payout`, and `/refunds` return 501. The contributions table has no proof column and no insert path.
+Y owns the lock rules, the pot state machine, the target-met check including the fee reserve, multi-party signing, the refund flow, and browser key handling. The contributions route counts a proof that passes the lock check and the mint check. `POST /api/pots/{id}/payout` and `/refunds` return 501. Reaching the target does not melt.
 
 ## Pins
 
-The server does not link CDK. When the money path is added, pin CDK git revision `24360fe5fabda9d8aa3ae98b1a7e5e15986aad5a` (the `cashu` crate on that commit is 0.18.0). Do not path-depend on `~/projects/cdk-nutnov`.
+The server pins the `cashu` crate `0.18.0` from crates.io, the version on CDK git revision `24360fe5fabda9d8aa3ae98b1a7e5e15986aad5a`. It does not path-depend on `~/projects/cdk-nutnov`, and it does not link the cdk crate.
 
 The browser pin is `@cashu/cashu-ts@5.0.0-rc.12`, commit `4d6e1f86aaae0627bd4b06f4497da9fce0abe37b`. The page does not import the library. `dd8bbe3` is a later main commit, not this tag.
 
-CDK deserializes a P2PK witness as a string of JSON. cashu-ts signs and returns an object. A later proof parser has to stringify the witness before the `cashu` crate reads it. This skeleton has no proof parser.
+CDK deserializes a P2PK witness as a string of JSON. cashu-ts signs and returns an object. The contributions body rejects a witness field. A later melt still has to stringify a witness before the `cashu` crate reads it.
 
 ## Run the page
 
@@ -62,7 +62,7 @@ curl -sS -X POST http://127.0.0.1:8787/api/pots \
   -d "{\"title\":\"Milk\",\"kind\":\"purchase\",\"target_sats\":1000,\"deadline_unix\":$(($(date +%s) + 86400)),\"destination\":\"lno1example\"}"
 ```
 
-`deadline_unix` has to be in the future and within 366 days. Kinds are `cause`, `purchase`, and `split_bill`. Status stays `open`. An unknown JSON field, including `proofs`, is rejected.
+`deadline_unix` has to be in the future and within 366 days. Kinds are `cause`, `purchase`, and `split_bill`. Status stays `open`. A new pot reports `locked_sats` 0. An unknown JSON field, including `proofs`, is rejected on create.
 
 The split-the-bill control on the page fills a two-hour deadline and labels the destination as the bill's BOLT11 invoice. It does not change payout rules.
 
@@ -155,7 +155,7 @@ The quote object should show `amount` 100, `amount_paid` 100, `amount_issued` 0,
 
 The page works as a sequence of controls, and it is hard to use. This pass is
 layout and wording only. Do not change `createSecret`, `secretMatchesPot`, or
-the 501 routes while doing it.
+the payout and refund routes while doing it.
 
 - The trust text is repeated in full on the home page and on every pot, above the action.
 - "Create refund key" has no section around it. Each click adds another pubkey paragraph.
@@ -168,7 +168,7 @@ Done when a new visitor can create a refund key, open a pot, and build a lock wi
 
 ## Not in this skeleton
 
-A paid regtest quote does not mint proofs or post a contribution. v2 co-signing, strict lock verification, and the split-the-bill payout rules come later. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
+Posting the swapped regtest proofs is a later step. v2 co-signing, the fee-reserve check, melt, and refunds come later. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
 
 Local git only. No remote.
 

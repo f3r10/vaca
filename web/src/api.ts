@@ -28,6 +28,7 @@ export interface Pot {
   status: string;
   created_at_unix: number;
   contribution_count: number;
+  locked_sats: number;
   locktime_unix: number;
   co_sign_until_unix: number;
   grace_seconds: number;

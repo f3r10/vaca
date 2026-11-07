@@ -338,6 +338,7 @@ function potCard(pot: Pot): HTMLElement {
     line("Status", pot.status),
     line("Target", `${pot.target_sats} sats`),
     line("Contributions counted", String(pot.contribution_count)),
+    line("Locked", `${pot.locked_sats} of ${pot.target_sats} sats`),
     line("Advertised deadline", formatUnix(pot.deadline_unix)),
     line("Server stops co-signing", formatUnix(pot.co_sign_until_unix)),
     line("Mint lock time (deadline + grace)", formatUnix(pot.locktime_unix)),

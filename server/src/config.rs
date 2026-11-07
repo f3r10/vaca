@@ -8,8 +8,8 @@ pub const MAX_POT_SATS: u64 = 100_000;
 /// Confirmed demo grace: advertised deadline plus 10 minutes.
 pub const GRACE_SECONDS: u64 = 600;
 
-/// CDK `origin/main` to pin when the money path is added.
-/// This binary does not depend on CDK.
+/// CDK revision whose `cashu` 0.18.0 this binary pins. Not a path dependency.
+/// This binary does not link the cdk crate.
 pub const CDK_GIT_REV: &str = "24360fe5fabda9d8aa3ae98b1a7e5e15986aad5a";
 
 /// cashu-ts release used by the browser. The server does not call it.

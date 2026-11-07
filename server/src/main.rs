@@ -3,6 +3,7 @@ mod db;
 mod error;
 mod http;
 mod lock;
+mod mint;
 mod pot;
 
 use std::sync::{Arc, Mutex};
@@ -50,6 +51,7 @@ async fn main() {
     let state = AppState {
         config: Arc::new(config),
         db: Arc::new(Mutex::new(connection)),
+        mint: mint::MintBackend::Live,
     };
     let app = http::router(state);
     let listener = match tokio::net::TcpListener::bind(bind).await {

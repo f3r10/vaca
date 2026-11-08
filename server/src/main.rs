@@ -48,6 +48,14 @@ async fn main() {
             std::process::exit(1);
         }
     };
+    match db::remember_missing_mint(&connection, &config.mint_url) {
+        Ok(0) => {}
+        Ok(filled) => tracing::info!(pots = filled, "stored the mint on pots that had none"),
+        Err(message) => {
+            tracing::error!(error = %message, "could not store the mint on existing pots");
+            std::process::exit(1);
+        }
+    }
     let state = AppState {
         config: Arc::new(config),
         db: Arc::new(Mutex::new(connection)),

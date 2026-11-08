@@ -27,7 +27,7 @@ A refund backup will be a file the browser downloads. A URL that contains the ke
 
 C, in this repo now: the crate, the Vite + TypeScript page, HTTP and sqlite plumbing, CORS, the demo script, and the regtest mint script.
 
-Y owns the lock rules, the pot state machine, the target-met check including the fee reserve, multi-party signing, the refund flow, and browser key handling. The contributions route counts a proof that passes the lock check and the mint check. `POST /api/pots/{id}/payout` and `/refunds` return 501. Reaching the target does not melt.
+Y owns the lock rules, the pot state machine, the target-met check including the fee reserve, multi-party signing, the refund flow, and browser key handling. The contributions route counts a proof that passes the lock check and the mint check. `POST /api/pots/{id}/payout` and `/refunds` return 501. Reaching the target does not melt. This mint's reserve is 1 sat, so the locked total has to cover the target plus that sat. Payout still returns 501.
 
 ## Pins
 
@@ -52,7 +52,7 @@ cargo test --manifest-path server/Cargo.toml
 curl -sS http://127.0.0.1:8787/api/health
 ```
 
-`VACA_BIND`, `VACA_DB_PATH`, `VACA_MINT_URL`, and `VACA_CORS_ORIGIN` override the defaults. Leave the mint URL empty until a mint exists. The sqlite file defaults to `data/vaca.sqlite` and is gitignored. The process logs whether a server-key path is set. It does not log the path or open the file. `VACA_SERVER_PUBKEY`, when set, is the compressed public key the server-key script printed. Startup stores that string. It does not open the key file to find the public key.
+`VACA_BIND`, `VACA_DB_PATH`, `VACA_MINT_URL`, and `VACA_CORS_ORIGIN` override the defaults. Leave the mint URL empty until a mint exists. Creating a pot copies that URL onto the pot. Proof checks use the stored URL, so a later change of `VACA_MINT_URL` applies to pots created after the change. A pot from an older database receives the current URL once, on the first start that has one set. The sqlite file defaults to `data/vaca.sqlite` and is gitignored. The process logs whether a server-key path is set. It does not log the path or open the file. `VACA_SERVER_PUBKEY`, when set, is the compressed public key the server-key script printed. Startup stores that string. It does not open the key file to find the public key.
 
 Creating a pot:
 

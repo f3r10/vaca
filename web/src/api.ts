@@ -24,6 +24,7 @@ export interface Pot {
   target_sats: number;
   deadline_unix: number;
   destination: string;
+  mint_url: string;
   organizer_pubkey: string | null;
   status: string;
   created_at_unix: number;
@@ -35,6 +36,9 @@ export interface Pot {
   fee_reserve_recipient: string;
   sigflag_v1: string;
   sigflag_v2: string;
+  fee_reserve_sats: number;
+  sats_still_needed: number;
+  payout_allowed: boolean;
 }
 
 export interface CreatePotInput {

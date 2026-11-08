@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 
-use crate::config::{FEE_RESERVE_RECIPIENT, GRACE_SECONDS, SIGFLAG_V1, SIGFLAG_V2};
+use crate::config::{
+    melt_fee_reserve_sats, FEE_RESERVE_RECIPIENT, GRACE_SECONDS, SIGFLAG_V1, SIGFLAG_V2,
+};
 
 pub const MAX_TITLE_CHARS: usize = 80;
 pub const MAX_DESTINATION_CHARS: usize = 2048;
@@ -36,6 +38,7 @@ pub struct PotView {
     pub target_sats: u64,
     pub deadline_unix: i64,
     pub destination: String,
+    pub mint_url: String,
     pub organizer_pubkey: Option<String>,
     pub status: String,
     pub created_at_unix: i64,
@@ -49,6 +52,9 @@ pub struct PotView {
     pub fee_reserve_recipient: &'static str,
     pub sigflag_v1: &'static str,
     pub sigflag_v2: &'static str,
+    pub fee_reserve_sats: u64,
+    pub sats_still_needed: u64,
+    pub payout_allowed: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +65,7 @@ pub struct StoredPot {
     pub target_sats: u64,
     pub deadline_unix: i64,
     pub destination: String,
+    pub mint_url: String,
     pub organizer_pubkey: Option<String>,
     pub status: String,
     pub created_at_unix: i64,
@@ -68,6 +75,10 @@ pub struct StoredPot {
 
 impl StoredPot {
     pub fn view(&self) -> PotView {
+        let fee_reserve_sats = melt_fee_reserve_sats(self.target_sats);
+        let payout_sats = self.target_sats.saturating_add(fee_reserve_sats);
+        let sats_still_needed = payout_sats - self.locked_sats;
+        let payout_allowed = self.locked_sats >= payout_sats;
         PotView {
             id: self.id.clone(),
             title: self.title.clone(),
@@ -75,6 +86,7 @@ impl StoredPot {
             target_sats: self.target_sats,
             deadline_unix: self.deadline_unix,
             destination: self.destination.clone(),
+            mint_url: self.mint_url.clone(),
             organizer_pubkey: self.organizer_pubkey.clone(),
             status: self.status.clone(),
             created_at_unix: self.created_at_unix,
@@ -86,6 +98,9 @@ impl StoredPot {
             fee_reserve_recipient: FEE_RESERVE_RECIPIENT,
             sigflag_v1: SIGFLAG_V1,
             sigflag_v2: SIGFLAG_V2,
+            fee_reserve_sats,
+            sats_still_needed,
+            payout_allowed,
         }
     }
 }
@@ -206,6 +221,7 @@ mod tests {
             target_sats: pot.target_sats,
             deadline_unix: pot.deadline_unix,
             destination: pot.destination,
+            mint_url: String::new(),
             organizer_pubkey: pot.organizer_pubkey,
             status: "open".to_string(),
             created_at_unix: NOW,
@@ -220,6 +236,9 @@ mod tests {
         assert_eq!(view.sigflag_v1, "SIG_INPUTS");
         assert_eq!(view.sigflag_v2, "SIG_ALL");
         assert_eq!(view.status, "open");
+        assert_eq!(view.fee_reserve_sats, 1);
+        assert_eq!(view.payout_allowed, false);
+        assert_eq!(view.mint_url, "");
     }
 
     #[test]

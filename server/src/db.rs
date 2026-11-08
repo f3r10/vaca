@@ -15,7 +15,10 @@ CREATE TABLE IF NOT EXISTS pots (
     destination TEXT NOT NULL,
     organizer_pubkey TEXT,
     status TEXT NOT NULL CHECK (status = 'open'),
-    created_at_unix INTEGER NOT NULL
+    created_at_unix INTEGER NOT NULL,
+    -- Copied from VACA_MINT_URL when the pot is created. NULL is an older row
+    -- that startup has not filled yet. Proof checks use this value.
+    mint_url TEXT
 );
 
 -- One row per checked proof. `proof` is cashu proof JSON for a later melt.
@@ -47,8 +50,7 @@ pub fn open(path: &Path) -> Result<Connection, String> {
     Ok(connection)
 }
 
-/// Adds proof columns to a database created before contributions were counted.
-/// `CREATE TABLE IF NOT EXISTS` does not alter an existing table.
+/// Adds columns that `CREATE TABLE IF NOT EXISTS` leaves missing on an old file.
 fn migrate(connection: &Connection) -> Result<(), String> {
     if !has_column(connection, "amount_sats")? {
         connection
@@ -74,6 +76,11 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             )
             .map_err(|err| err.to_string())?;
     }
+    if !has_pot_column(connection, "mint_url")? {
+        connection
+            .execute("ALTER TABLE pots ADD COLUMN mint_url TEXT", [])
+            .map_err(|err| err.to_string())?;
+    }
     connection
         .execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS contributions_secret ON contributions(secret)",
@@ -81,6 +88,31 @@ fn migrate(connection: &Connection) -> Result<(), String> {
         )
         .map_err(|err| err.to_string())?;
     Ok(())
+}
+
+fn has_pot_column(connection: &Connection, column: &str) -> Result<bool, String> {
+    let mut statement = connection
+        .prepare("SELECT 1 FROM pragma_table_info('pots') WHERE name = ?1")
+        .map_err(|err| err.to_string())?;
+    let mut rows = statement
+        .query(params![column])
+        .map_err(|err| err.to_string())?;
+    Ok(rows.next().map_err(|err| err.to_string())?.is_some())
+}
+
+/// Fills pots created before `mint_url` existed. A pot that already has a URL,
+/// including an empty one written at creation, is left alone.
+pub fn remember_missing_mint(connection: &Connection, mint_url: &str) -> Result<u64, String> {
+    if mint_url.is_empty() {
+        return Ok(0);
+    }
+    let changed = connection
+        .execute(
+            "UPDATE pots SET mint_url = ?1 WHERE mint_url IS NULL",
+            params![mint_url],
+        )
+        .map_err(|err| err.to_string())?;
+    u64::try_from(changed).map_err(|err| err.to_string())
 }
 
 fn has_column(connection: &Connection, column: &str) -> Result<bool, String> {
@@ -115,7 +147,7 @@ pub fn secret_already_counted(connection: &Connection, secret: &str) -> Result<b
 pub fn insert_contributions(
     connection: &mut Connection,
     pot_id: &str,
-    target_sats: u64,
+    ceiling_sats: u64,
     rows: &[NewContribution],
     created_at_unix: i64,
 ) -> Result<(), ApiError> {
@@ -127,14 +159,16 @@ pub fn insert_contributions(
     let added = rows
         .iter()
         .try_fold(0u64, |acc, row| acc.checked_add(row.amount_sats))
-        .ok_or_else(|| ApiError::BadRequest("That amount passes the target.".to_string()))?;
+        .ok_or_else(|| {
+            ApiError::BadRequest("That amount passes the target plus the fee reserve.".to_string())
+        })?;
     if locked
         .checked_add(added)
-        .map(|total| total > target_sats)
+        .map(|total| total > ceiling_sats)
         .unwrap_or(true)
     {
         return Err(ApiError::BadRequest(
-            "That amount passes the target.".to_string(),
+            "That amount passes the target plus the fee reserve.".to_string(),
         ));
     }
     for row in rows {
@@ -186,14 +220,15 @@ pub fn insert_pot(
     connection: &Connection,
     id: &str,
     pot: &NewPot,
+    mint_url: &str,
     created_at_unix: i64,
 ) -> Result<StoredPot, ApiError> {
     connection
         .execute(
             "INSERT INTO pots (
                 id, title, kind, target_sats, deadline_unix, destination,
-                organizer_pubkey, status, created_at_unix
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8)",
+                organizer_pubkey, status, created_at_unix, mint_url
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'open', ?8, ?9)",
             params![
                 id,
                 pot.title,
@@ -203,6 +238,7 @@ pub fn insert_pot(
                 pot.destination,
                 pot.organizer_pubkey,
                 created_at_unix,
+                mint_url,
             ],
         )
         .map_err(|err| {
@@ -265,7 +301,8 @@ SELECT
     p.status,
     p.created_at_unix,
     (SELECT COUNT(*) FROM contributions c WHERE c.pot_id = p.id) AS contribution_count,
-    (SELECT COALESCE(SUM(amount_sats), 0) FROM contributions c WHERE c.pot_id = p.id) AS locked_sats
+    (SELECT COALESCE(SUM(amount_sats), 0) FROM contributions c WHERE c.pot_id = p.id) AS locked_sats,
+    p.mint_url
 FROM pots p
 ";
 
@@ -295,6 +332,7 @@ fn map_pot(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredPot> {
                 )
             })?
         },
+        mint_url: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
     })
 }
 
@@ -322,7 +360,8 @@ mod tests {
             destination: "lno1qq".to_string(),
             organizer_pubkey: None,
         };
-        let stored = insert_pot(&connection, "pot-1", &pot, 1_700_000_000).expect("insert");
+        let stored = insert_pot(&connection, "pot-1", &pot, "", 1_700_000_000).expect("insert");
+        assert_eq!(stored.mint_url, "");
         assert_eq!(stored.status, "open");
         assert_eq!(stored.contribution_count, 0);
         assert_eq!(stored.locked_sats, 0);
@@ -355,7 +394,7 @@ mod tests {
             destination: "lno1qq".to_string(),
             organizer_pubkey: None,
         };
-        insert_pot(&connection, "pot-1", &pot, 1_700_000_000).expect("pot");
+        insert_pot(&connection, "pot-1", &pot, "", 1_700_000_000).expect("pot");
         let row = NewContribution {
             amount_sats: 4,
             secret: "one".to_string(),
@@ -379,6 +418,74 @@ mod tests {
         assert_eq!(stored.locked_sats, 4);
         assert_eq!(stored.contribution_count, 1);
         assert_eq!(stored.status, "open");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn remember_missing_mint_fills_old_rows_once() {
+        let path =
+            std::env::temp_dir().join(format!("vaca-db-mint-{}.sqlite", uuid::Uuid::new_v4()));
+        let connection = Connection::open(&path).expect("open");
+        connection
+            .execute_batch(
+                "CREATE TABLE pots (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    target_sats INTEGER NOT NULL,
+                    deadline_unix INTEGER NOT NULL,
+                    destination TEXT NOT NULL,
+                    organizer_pubkey TEXT,
+                    status TEXT NOT NULL,
+                    created_at_unix INTEGER NOT NULL
+                );
+                INSERT INTO pots (
+                    id, title, kind, target_sats, deadline_unix, destination,
+                    organizer_pubkey, status, created_at_unix
+                ) VALUES (
+                    'old', 'Cause', 'cause', 1000, 1800000000, 'asd',
+                    NULL, 'open', 1700000000
+                );",
+            )
+            .expect("old pots");
+        drop(connection);
+        let connection = open(&path).expect("migrate");
+        let filled = remember_missing_mint(&connection, "http://127.0.0.1:8085").expect("fill");
+        assert_eq!(filled, 1);
+        let stored = get_pot(&connection, "old").unwrap().unwrap();
+        assert_eq!(stored.mint_url, "http://127.0.0.1:8085");
+        let again = remember_missing_mint(&connection, "http://mint.example").expect("again");
+        assert_eq!(again, 0);
+        assert_eq!(
+            get_pot(&connection, "old").unwrap().unwrap().mint_url,
+            "http://127.0.0.1:8085"
+        );
+        let pot = NewPot {
+            title: "Cause".to_string(),
+            kind: "cause".to_string(),
+            target_sats: 100,
+            deadline_unix: 1_800_000_000,
+            destination: "lno1qq".to_string(),
+            organizer_pubkey: None,
+        };
+        insert_pot(&connection, "empty", &pot, "", 1_700_000_000).expect("empty");
+        insert_pot(
+            &connection,
+            "kept",
+            &pot,
+            "http://kept.example",
+            1_700_000_000,
+        )
+        .expect("kept");
+        let skipped = remember_missing_mint(&connection, "http://mint.example").expect("skip");
+        assert_eq!(skipped, 0);
+        assert_eq!(get_pot(&connection, "empty").unwrap().unwrap().mint_url, "");
+        assert_eq!(
+            get_pot(&connection, "kept").unwrap().unwrap().mint_url,
+            "http://kept.example"
+        );
+        let untouched = remember_missing_mint(&connection, "").expect("blank");
+        assert_eq!(untouched, 0);
         let _ = std::fs::remove_file(&path);
     }
 }

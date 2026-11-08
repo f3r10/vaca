@@ -19,6 +19,9 @@ pub const CASHU_TS_VERSION: &str = "5.0.0-rc.12";
 pub const CASHU_TS_COMMIT: &str = "4d6e1f86aaae0627bd4b06f4497da9fce0abe37b";
 
 pub const FEE_RESERVE_RECIPIENT: &str = "organizer";
+pub const MELT_FEE_PERCENT: u64 = 0;
+pub const MELT_FEE_RESERVE_MIN_SATS: u64 = 1;
+
 pub const SIGFLAG_V1: &str = "SIG_INPUTS";
 pub const SIGFLAG_V2: &str = "SIG_ALL";
 
@@ -147,6 +150,11 @@ fn validate_mint_url(mint_url: &str) -> Result<(), String> {
         return Err("VACA_MINT_URL must not include credentials".to_string());
     }
     Ok(())
+}
+
+pub fn melt_fee_reserve_sats(target_sats: u64) -> u64 {
+    let relative = target_sats.saturating_mul(MELT_FEE_PERCENT) / 100;
+    relative.max(MELT_FEE_RESERVE_MIN_SATS)
 }
 
 fn env_string(name: &str, default: &str) -> Result<String, String> {

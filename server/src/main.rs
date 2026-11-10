@@ -10,6 +10,8 @@ use std::sync::{Arc, Mutex};
 
 use http::AppState;
 
+use crate::http::SimpleCache;
+
 #[tokio::main]
 async fn main() {
     let config = match config::Config::from_env() {
@@ -56,10 +58,12 @@ async fn main() {
             std::process::exit(1);
         }
     }
+    let quote_cache = SimpleCache::new();
     let state = AppState {
         config: Arc::new(config),
         db: Arc::new(Mutex::new(connection)),
         mint: mint::MintBackend::Live,
+        quote_cache
     };
     let app = http::router(state);
     let listener = match tokio::net::TcpListener::bind(bind).await {

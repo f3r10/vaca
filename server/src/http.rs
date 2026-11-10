@@ -1,5 +1,5 @@
-use std::collections::HashSet;
-use std::sync::{Arc, Mutex};
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, RwLock};
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, Method, StatusCode};
@@ -16,14 +16,44 @@ use crate::config::{
 use crate::db::{self, NewContribution};
 use crate::error::ApiError;
 use crate::lock;
-use crate::mint::{self, melt_quote, MintBackend};
+use crate::mint::{self, melt_quote, MeltQuote, MintBackend};
 use crate::pot::{self, CreatePotRequest, PotView};
+
+#[derive(Clone)]
+pub struct SimpleCache {
+    store: Arc<RwLock<HashMap<(String, String), MeltQuote>>>,
+}
+
+impl SimpleCache {
+    pub fn new() -> Self {
+        Self {
+            store: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    pub fn set(&self, key: (String, String), value: MeltQuote) {
+        self.store.write().unwrap_or_else(|err| err.into_inner()).insert(key, value);
+    }
+
+    pub fn get_fresh(&self, key: &(String, String), now_unix: u64) -> Option<MeltQuote> {
+        let mut store = self.store.write().unwrap_or_else(|err| err.into_inner());
+        match store.get(key).copied() {
+            Some(quote) if quote.expiry_unix > now_unix => Some(quote),
+            Some(_) => {
+                store.remove(key);
+                None
+            }
+            None => None,
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
     pub db: Arc<Mutex<Connection>>,
     pub mint: MintBackend,
+    pub quote_cache: SimpleCache,
 }
 
 #[derive(Serialize)]
@@ -108,13 +138,22 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
 async fn list_pots(State(state): State<AppState>) -> Result<Json<PotList>, ApiError> {
     let mut pots: Vec<PotView> = vec![];
     for pot in with_db(&state, db::list_pots)?.into_iter() {
-        let melt_quote_lookup = melt_quote(
-            &state.mint,
-            &pot.mint_url,
-            &pot.destination,
-            pot.target_sats,
-        )
-        .await;
+        let melt_quote_lookup = match state.quote_cache.get_fresh(
+            &(pot.mint_url.clone(), pot.destination.clone()),
+            now_unix() as u64,
+        ) {
+            Some(quoted) => mint::MeltQuoteLookup::Quoted(quoted),
+            None => {
+                melt_quote(
+                    &state.mint,
+                    &pot.mint_url,
+                    &pot.destination,
+                    pot.target_sats,
+                    state.quote_cache.clone()
+                )
+                .await
+            }
+        };
         let (view, _) = pot.view(&melt_quote_lookup);
         pots.push(view)
     }
@@ -126,13 +165,22 @@ async fn get_pot(
     Path(id): Path<String>,
 ) -> Result<Json<PotView>, ApiError> {
     let pot = require_pot(&state, &id)?;
-    let melt_quote_lookup = melt_quote(
-        &state.mint,
-        &pot.mint_url,
-        &pot.destination,
-        pot.target_sats,
-    )
-    .await;
+    let melt_quote_lookup = match state.quote_cache.get_fresh(
+        &(pot.mint_url.clone(), pot.destination.clone()),
+        now_unix() as u64,
+    ) {
+        Some(quoted) => mint::MeltQuoteLookup::Quoted(quoted),
+        None => {
+            melt_quote(
+                &state.mint,
+                &pot.mint_url,
+                &pot.destination,
+                pot.target_sats,
+                state.quote_cache.clone()
+            )
+            .await
+        }
+    };
     let (view, _) = pot.view(&melt_quote_lookup);
     Ok(Json(view))
 }
@@ -154,13 +202,22 @@ async fn create_pot(
             created_at,
         )
     })?;
-    let melt_quote_lookup = melt_quote(
-        &state.mint,
-        &stored.mint_url,
-        &stored.destination,
-        stored.target_sats,
-    )
-    .await;
+    let melt_quote_lookup = match state.quote_cache.get_fresh(
+        &(stored.mint_url.clone(), stored.destination.clone()),
+        now_unix() as u64,
+    ) {
+        Some(quoted) => mint::MeltQuoteLookup::Quoted(quoted),
+        None => {
+            melt_quote(
+                &state.mint,
+                &stored.mint_url,
+                &stored.destination,
+                stored.target_sats,
+                state.quote_cache.clone()
+            )
+            .await
+        }
+    };
     let (view, _) = stored.view(&melt_quote_lookup);
     Ok((StatusCode::CREATED, Json(view)))
 }
@@ -202,13 +259,22 @@ async fn post_contribution(
         return Err(reject(&id, "There is no proof."));
     }
     let pot = require_pot(&state, &id)?;
-    let melt_quote_lookup = melt_quote(
-        &state.mint,
-        &pot.mint_url,
-        &pot.destination,
-        pot.target_sats,
-    )
-    .await;
+    let melt_quote_lookup = match state.quote_cache.get_fresh(
+        &(pot.mint_url.clone(), pot.destination.clone()),
+        now_unix() as u64,
+    ) {
+        Some(quoted) => mint::MeltQuoteLookup::Quoted(quoted),
+        None => {
+            melt_quote(
+                &state.mint,
+                &pot.mint_url,
+                &pot.destination,
+                pot.target_sats,
+                state.quote_cache.clone()
+            )
+            .await
+        }
+    };
     if matches!(state.mint, MintBackend::Live) && pot.mint_url.is_empty() {
         return Err(reject(&id, "Mint URL is not set."));
     }
@@ -380,6 +446,25 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    #[test]
+    fn fresh_quote_is_reused_until_it_expires() {
+        let cache = SimpleCache::new();
+        let key = ("http://127.0.0.1:8085".to_string(), "lnbc1quote".to_string());
+        cache.set(
+            key.clone(),
+            MeltQuote {
+                amount_sats: 1_000,
+                fee_reserve_sats: 20,
+                expiry_unix: 100,
+            },
+        );
+        let fresh = cache.get_fresh(&key, 50).expect("in date");
+        assert_eq!(fresh.fee_reserve_sats, 20);
+        assert_eq!(fresh.amount_sats, 1_000);
+        assert!(cache.get_fresh(&key, 100).is_none());
+        assert!(cache.get_fresh(&key, 50).is_none());
+    }
+
     fn test_app() -> (Router, std::path::PathBuf) {
         test_app_with(None)
     }
@@ -406,10 +491,12 @@ mod tests {
             server_pubkey,
         };
         let connection = db::open(&path).expect("db");
+        let quote_cache = SimpleCache::new();
         let state = AppState {
             config: Arc::new(config),
             db: Arc::new(Mutex::new(connection)),
             mint,
+            quote_cache,
         };
         (router(state), path)
     }

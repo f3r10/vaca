@@ -7,6 +7,7 @@ use cashu::Proof;
 use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
+use crate::http::SimpleCache;
 
 pub(crate) const SIGNED: &str = "The mint did not sign this proof.";
 pub(crate) const SPENDABLE: &str = "The proof is not spendable.";
@@ -28,6 +29,7 @@ pub enum ScriptedMint {
     NotSpendable,
 }
 
+#[derive(Clone, Copy)]
 pub struct MeltQuote {
     pub amount_sats: u64,
     pub fee_reserve_sats: u64,
@@ -77,6 +79,7 @@ pub async fn melt_quote(
     mint_url: &str,
     destination: &str,
     target_sats: u64,
+    quote_store: SimpleCache
 ) -> MeltQuoteLookup {
     match backend {
         MintBackend::Scripted(ScriptedMint::Accept) => MeltQuoteLookup::Quoted(MeltQuote {
@@ -148,11 +151,13 @@ pub async fn melt_quote(
                 };
                 match melt_quote_response.state {
                     cashu::MeltQuoteState::Unpaid => {
-                        return MeltQuoteLookup::Quoted(MeltQuote {
+                        let quote = MeltQuote {
                             amount_sats: melt_quote_response.amount.into(),
                             fee_reserve_sats: melt_quote_response.fee_reserve.into(),
                             expiry_unix: melt_quote_response.expiry,
-                        })
+                        };
+                        quote_store.set((mint_url.to_string(), destination.to_string()), quote);
+                        return MeltQuoteLookup::Quoted(quote)
                     }
                     cashu::MeltQuoteState::Paid => return MeltQuoteLookup::Unavailable,
                     cashu::MeltQuoteState::Pending => return MeltQuoteLookup::Unavailable,

@@ -1,7 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-use crate::config::{
-    melt_fee_reserve_sats, FEE_RESERVE_RECIPIENT, GRACE_SECONDS, SIGFLAG_V1, SIGFLAG_V2,
+use crate::{
+    config::{
+        FEE_RESERVE_RECIPIENT, GRACE_SECONDS, MELT_FEE_RESERVE_MIN_SATS,
+        SIGFLAG_V1, SIGFLAG_V2,
+    },
+    mint,
 };
 
 pub const MAX_TITLE_CHARS: usize = 80;
@@ -52,9 +56,11 @@ pub struct PotView {
     pub fee_reserve_recipient: &'static str,
     pub sigflag_v1: &'static str,
     pub sigflag_v2: &'static str,
-    pub fee_reserve_sats: u64,
+    pub fee_reserve_sats: Option<u64>,
     pub sats_still_needed: u64,
     pub payout_allowed: bool,
+    pub fee_quoted: bool,
+    pub quote_amount_sats: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,34 +80,83 @@ pub struct StoredPot {
 }
 
 impl StoredPot {
-    pub fn view(&self) -> PotView {
-        let fee_reserve_sats = melt_fee_reserve_sats(self.target_sats);
-        let payout_sats = self.target_sats.saturating_add(fee_reserve_sats);
-        let sats_still_needed = payout_sats - self.locked_sats;
-        let payout_allowed = self.locked_sats >= payout_sats;
-        PotView {
-            id: self.id.clone(),
-            title: self.title.clone(),
-            kind: self.kind.clone(),
-            target_sats: self.target_sats,
-            deadline_unix: self.deadline_unix,
-            destination: self.destination.clone(),
-            mint_url: self.mint_url.clone(),
-            organizer_pubkey: self.organizer_pubkey.clone(),
-            status: self.status.clone(),
-            created_at_unix: self.created_at_unix,
-            contribution_count: self.contribution_count,
-            locked_sats: self.locked_sats,
-            locktime_unix: self.deadline_unix.saturating_add(GRACE_SECONDS as i64),
-            co_sign_until_unix: self.deadline_unix,
-            grace_seconds: GRACE_SECONDS,
-            fee_reserve_recipient: FEE_RESERVE_RECIPIENT,
-            sigflag_v1: SIGFLAG_V1,
-            sigflag_v2: SIGFLAG_V2,
-            fee_reserve_sats,
-            sats_still_needed,
-            payout_allowed,
+    // Example:
+    // • The ceiling is 1001. A contribution is refused when the locked total would go above 1001.
+    // • sats_still_needed is 1001 - 100, which is 901.
+    // • payout_allowed is true when locked_sats is at least 1001. Once 1001 is locked, sats_still_needed is 0.
+    pub fn view(&self, lookup: &mint::MeltQuoteLookup) -> (PotView, u64) {
+        let mut sats_still_needed = self.target_sats.saturating_sub(self.locked_sats);
+        let payout_allowed: bool; // self.locked_sats >= payout_sats;
+        let fee_quoted: bool;
+        let fee_reserve_sats: Option<u64>;
+        let quote_amount_sats: Option<u64>;
+        let ceiling;
+        match lookup {
+            mint::MeltQuoteLookup::Quoted(melt_quote) => {
+                fee_quoted = true;
+                if melt_quote.amount_sats == self.target_sats {
+                    match self.target_sats.checked_add(melt_quote.fee_reserve_sats) {
+                        Some(ceiling_intern) => {
+                            ceiling = ceiling_intern;
+                            payout_allowed = if self.locked_sats >= ceiling_intern {
+                                true
+                            } else {
+                                false
+                            };
+                            sats_still_needed = ceiling_intern.saturating_sub(self.locked_sats);
+                        }
+                        None => {
+                            ceiling = self.target_sats;
+                            payout_allowed = false
+                        }
+                    };
+                    fee_reserve_sats = Some(melt_quote.fee_reserve_sats);
+                    quote_amount_sats = Some(melt_quote.amount_sats);
+                } else {
+                    ceiling = self.target_sats;
+                    sats_still_needed = self.target_sats.saturating_sub(self.locked_sats);
+                    payout_allowed = false;
+                    fee_reserve_sats = Some(melt_quote.fee_reserve_sats);
+                    quote_amount_sats = Some(melt_quote.amount_sats);
+                }
+            }
+            mint::MeltQuoteLookup::Unavailable => {
+                payout_allowed = false;
+                fee_quoted = false;
+                fee_reserve_sats = None;
+                quote_amount_sats = None;
+                ceiling = self.target_sats + MELT_FEE_RESERVE_MIN_SATS;
+                sats_still_needed = self.target_sats.saturating_sub(self.locked_sats);
+            }
         }
+        (
+            PotView {
+                id: self.id.clone(),
+                title: self.title.clone(),
+                kind: self.kind.clone(),
+                target_sats: self.target_sats,
+                deadline_unix: self.deadline_unix,
+                destination: self.destination.clone(),
+                mint_url: self.mint_url.clone(),
+                organizer_pubkey: self.organizer_pubkey.clone(),
+                status: self.status.clone(),
+                created_at_unix: self.created_at_unix,
+                contribution_count: self.contribution_count,
+                locked_sats: self.locked_sats,
+                locktime_unix: self.deadline_unix.saturating_add(GRACE_SECONDS as i64),
+                co_sign_until_unix: self.deadline_unix,
+                grace_seconds: GRACE_SECONDS,
+                fee_reserve_recipient: FEE_RESERVE_RECIPIENT,
+                sigflag_v1: SIGFLAG_V1,
+                sigflag_v2: SIGFLAG_V2,
+                fee_reserve_sats,
+                sats_still_needed,
+                payout_allowed,
+                fee_quoted: fee_quoted,
+                quote_amount_sats: quote_amount_sats,
+            },
+            ceiling,
+        )
     }
 }
 
@@ -228,7 +283,13 @@ mod tests {
             contribution_count: 0,
             locked_sats: 0,
         };
-        let view = stored.view();
+
+        let melt_quoted_lookup = mint::MeltQuoteLookup::Quoted(mint::MeltQuote {
+            amount_sats: pot.target_sats,
+            fee_reserve_sats: 1,
+            expiry_unix: u64::MAX,
+        });
+        let (view, _) = stored.view(&melt_quoted_lookup);
         assert_eq!(view.locked_sats, 0);
         assert_eq!(view.locktime_unix, view.deadline_unix + 600);
         assert_eq!(view.co_sign_until_unix, view.deadline_unix);
@@ -236,7 +297,7 @@ mod tests {
         assert_eq!(view.sigflag_v1, "SIG_INPUTS");
         assert_eq!(view.sigflag_v2, "SIG_ALL");
         assert_eq!(view.status, "open");
-        assert_eq!(view.fee_reserve_sats, 1);
+        assert_eq!(view.fee_reserve_sats, Some(1));
         assert_eq!(view.payout_allowed, false);
         assert_eq!(view.mint_url, "");
     }

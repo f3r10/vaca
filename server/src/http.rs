@@ -10,13 +10,13 @@ use serde::{Deserialize, Serialize};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
 use crate::config::{
-    melt_fee_reserve_sats, Config, CASHU_TS_COMMIT, CASHU_TS_VERSION, CDK_GIT_REV,
-    FEE_RESERVE_RECIPIENT, SIGFLAG_V1, SIGFLAG_V2,
+    Config, CASHU_TS_COMMIT, CASHU_TS_VERSION, CDK_GIT_REV, FEE_RESERVE_RECIPIENT, SIGFLAG_V1,
+    SIGFLAG_V2,
 };
 use crate::db::{self, NewContribution};
 use crate::error::ApiError;
 use crate::lock;
-use crate::mint::{self, MintBackend};
+use crate::mint::{self, melt_quote, MintBackend};
 use crate::pot::{self, CreatePotRequest, PotView};
 
 #[derive(Clone)]
@@ -106,10 +106,18 @@ async fn health(State(state): State<AppState>) -> Json<Health> {
 }
 
 async fn list_pots(State(state): State<AppState>) -> Result<Json<PotList>, ApiError> {
-    let pots = with_db(&state, db::list_pots)?
-        .into_iter()
-        .map(|pot| pot.view())
-        .collect();
+    let mut pots: Vec<PotView> = vec![];
+    for pot in with_db(&state, db::list_pots)?.into_iter() {
+        let melt_quote_lookup = melt_quote(
+            &state.mint,
+            &pot.mint_url,
+            &pot.destination,
+            pot.target_sats,
+        )
+        .await;
+        let (view, _) = pot.view(&melt_quote_lookup);
+        pots.push(view)
+    }
     Ok(Json(PotList { pots }))
 }
 
@@ -118,7 +126,15 @@ async fn get_pot(
     Path(id): Path<String>,
 ) -> Result<Json<PotView>, ApiError> {
     let pot = require_pot(&state, &id)?;
-    Ok(Json(pot.view()))
+    let melt_quote_lookup = melt_quote(
+        &state.mint,
+        &pot.mint_url,
+        &pot.destination,
+        pot.target_sats,
+    )
+    .await;
+    let (view, _) = pot.view(&melt_quote_lookup);
+    Ok(Json(view))
 }
 
 async fn create_pot(
@@ -138,7 +154,15 @@ async fn create_pot(
             created_at,
         )
     })?;
-    Ok((StatusCode::CREATED, Json(stored.view())))
+    let melt_quote_lookup = melt_quote(
+        &state.mint,
+        &stored.mint_url,
+        &stored.destination,
+        stored.target_sats,
+    )
+    .await;
+    let (view, _) = stored.view(&melt_quote_lookup);
+    Ok((StatusCode::CREATED, Json(view)))
 }
 
 #[derive(Deserialize)]
@@ -178,6 +202,13 @@ async fn post_contribution(
         return Err(reject(&id, "There is no proof."));
     }
     let pot = require_pot(&state, &id)?;
+    let melt_quote_lookup = melt_quote(
+        &state.mint,
+        &pot.mint_url,
+        &pot.destination,
+        pot.target_sats,
+    )
+    .await;
     if matches!(state.mint, MintBackend::Live) && pot.mint_url.is_empty() {
         return Err(reject(&id, "Mint URL is not set."));
     }
@@ -185,7 +216,8 @@ async fn post_contribution(
         return Err(reject(&id, "The deadline has passed."));
     }
 
-    let locktime = pot.view().locktime_unix;
+    let (preview, ceiling) = pot.view(&melt_quote_lookup);
+    let locktime = preview.locktime_unix;
     let mut seen = HashSet::new();
     let mut sum = 0u64;
     for proof in &body.proofs {
@@ -207,9 +239,6 @@ async fn post_contribution(
             .checked_add(proof.amount)
             .ok_or_else(|| reject(&id, "That amount passes the target plus the fee reserve."))?;
     }
-    let ceiling = pot
-        .target_sats
-        .saturating_add(melt_fee_reserve_sats(pot.target_sats));
     if pot
         .locked_sats
         .checked_add(sum)
@@ -256,7 +285,8 @@ async fn post_contribution(
         sats = sum,
         "counted proofs"
     );
-    Ok(Json(stored.view()))
+    let (view, _) = stored.view(&melt_quote_lookup);
+    Ok(Json(view))
 }
 
 fn reject(pot_id: &str, message: &str) -> ApiError {
@@ -782,6 +812,137 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn contribution_needs_the_quoted_fee_and_does_not_pay_out() {
+        let server = compressed("02", "11");
+        let refund = compressed("03", "22");
+        let (app, path) = open_app(
+            Some(server.clone()),
+            MintBackend::Scripted(crate::mint::ScriptedMint::Fee(20)),
+            "http://127.0.0.1:9".to_string(),
+        );
+        let created = create_cause(&app, 1_000).await;
+        let id = created["id"].as_str().unwrap();
+        let locktime = created["locktime_unix"].as_i64().unwrap();
+        let secret = v1_secret_nonce(&server, &refund, locktime, "1001");
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/contributions"),
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "proofs": [signed_proof(&secret, 1001)],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["locked_sats"], 1001);
+        assert_eq!(body["fee_reserve_sats"], 20);
+        assert_eq!(body["quote_amount_sats"], 1000);
+        assert_eq!(body["fee_quoted"], true);
+        assert_eq!(body["sats_still_needed"], 19);
+        assert_eq!(body["payout_allowed"], false);
+        assert_eq!(body["status"], "open");
+
+        let again = create_cause(&app, 1_000).await;
+        let id = again["id"].as_str().unwrap();
+        let locktime = again["locktime_unix"].as_i64().unwrap();
+        let secret = v1_secret_nonce(&server, &refund, locktime, "1020");
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/contributions"),
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "proofs": [signed_proof(&secret, 1020)],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["locked_sats"], 1020);
+        assert_eq!(body["sats_still_needed"], 0);
+        assert_eq!(body["payout_allowed"], true);
+        assert_eq!(body["status"], "open");
+
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/payout"),
+                serde_json::json!({
+                    "proofs": [{"secret": "not-a-real-secret", "witness": {"signatures": ["aa"]}}]
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = json_body(response).await;
+        assert_eq!(body["error"], "not_implemented");
+        assert_eq!(body["route"], "payout");
+        assert_eq!(body["owner"], "Y");
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn contribution_rejects_a_quote_whose_amount_is_not_the_target() {
+        let server = compressed("02", "11");
+        let refund = compressed("03", "22");
+        let (app, path) = open_app(
+            Some(server.clone()),
+            MintBackend::Scripted(crate::mint::ScriptedMint::MismatchedAmount),
+            "http://127.0.0.1:9".to_string(),
+        );
+        let created = create_cause(&app, 1_000).await;
+        let id = created["id"].as_str().unwrap();
+        let locktime = created["locktime_unix"].as_i64().unwrap();
+        let secret = v1_secret_nonce(&server, &refund, locktime, "match-1000");
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/contributions"),
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "proofs": [signed_proof(&secret, 1000)],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["locked_sats"], 1000);
+        assert_eq!(body["sats_still_needed"], 0);
+        assert_eq!(body["payout_allowed"], false);
+        assert_eq!(body["fee_quoted"], true);
+        assert_eq!(body["fee_reserve_sats"], 1);
+        assert_eq!(body["quote_amount_sats"], 1001);
+        assert_eq!(body["status"], "open");
+
+        let again = create_cause(&app, 1_000).await;
+        let id = again["id"].as_str().unwrap();
+        let locktime = again["locktime_unix"].as_i64().unwrap();
+        let secret = v1_secret_nonce(&server, &refund, locktime, "match-1001");
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/contributions"),
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "proofs": [signed_proof(&secret, 1001)],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["message"],
+            "That amount passes the target plus the fee reserve."
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn contribution_refuses_an_empty_mint_url_a_past_deadline_and_the_target() {
         let server = compressed("02", "ab");
         let refund = compressed("03", "cd");
@@ -935,6 +1096,8 @@ mod tests {
             let expected = match scripted {
                 crate::mint::ScriptedMint::BadSignature => crate::mint::SIGNED,
                 crate::mint::ScriptedMint::NotSpendable => crate::mint::SPENDABLE,
+                crate::mint::ScriptedMint::Fee(_) => unreachable!(),
+                crate::mint::ScriptedMint::MismatchedAmount => unreachable!(),
                 crate::mint::ScriptedMint::Accept => unreachable!(),
             };
             assert_eq!(message, expected);

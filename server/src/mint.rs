@@ -4,6 +4,7 @@ use cashu::nuts::{
     CheckStateRequest, CheckStateResponse, CurrencyUnit, KeysResponse, KeysetResponse, State,
 };
 use cashu::Proof;
+use serde::{Deserialize, Serialize};
 
 use crate::error::ApiError;
 
@@ -21,8 +22,35 @@ pub enum MintBackend {
 #[derive(Clone, Copy)]
 pub enum ScriptedMint {
     Accept,
+    Fee(u64),
+    MismatchedAmount,
     BadSignature,
     NotSpendable,
+}
+
+pub struct MeltQuote {
+    pub amount_sats: u64,
+    pub fee_reserve_sats: u64,
+    pub expiry_unix: u64,
+}
+
+pub enum MeltQuoteLookup {
+    Quoted(MeltQuote),
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MeltQuoteRequest {
+    request: String,
+    unit: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct MeltQuoteResponse {
+    amount: cashu::Amount,
+    fee_reserve: cashu::Amount,
+    state: cashu::nuts::MeltQuoteState,
+    expiry: u64,
 }
 
 pub async fn check_proofs(
@@ -32,6 +60,8 @@ pub async fn check_proofs(
 ) -> Result<(), ApiError> {
     match backend {
         MintBackend::Scripted(ScriptedMint::Accept) => Ok(()),
+        MintBackend::Scripted(ScriptedMint::Fee(_)) => Ok(()),
+        MintBackend::Scripted(ScriptedMint::MismatchedAmount) => Ok(()),
         MintBackend::Scripted(ScriptedMint::BadSignature) => {
             Err(ApiError::BadRequest(SIGNED.to_string()))
         }
@@ -39,6 +69,98 @@ pub async fn check_proofs(
             Err(ApiError::BadRequest(SPENDABLE.to_string()))
         }
         MintBackend::Live => live_check(mint_url, proofs).await,
+    }
+}
+
+pub async fn melt_quote(
+    backend: &MintBackend,
+    mint_url: &str,
+    destination: &str,
+    target_sats: u64,
+) -> MeltQuoteLookup {
+    match backend {
+        MintBackend::Scripted(ScriptedMint::Accept) => MeltQuoteLookup::Quoted(MeltQuote {
+            amount_sats: target_sats,
+            fee_reserve_sats: 1,
+            expiry_unix: u64::MAX,
+        }),
+        MintBackend::Scripted(ScriptedMint::Fee(fee)) => MeltQuoteLookup::Quoted(MeltQuote {
+            amount_sats: target_sats,
+            fee_reserve_sats: *fee,
+            expiry_unix: u64::MAX,
+        }),
+        MintBackend::Scripted(ScriptedMint::MismatchedAmount) => {
+            MeltQuoteLookup::Quoted(MeltQuote {
+                amount_sats: target_sats.saturating_add(1),
+                fee_reserve_sats: 1,
+                expiry_unix: u64::MAX,
+            })
+        }
+        MintBackend::Scripted(ScriptedMint::BadSignature) => MeltQuoteLookup::Quoted(MeltQuote {
+            amount_sats: target_sats,
+            fee_reserve_sats: 1,
+            expiry_unix: u64::MAX,
+        }),
+        MintBackend::Scripted(ScriptedMint::NotSpendable) => MeltQuoteLookup::Quoted(MeltQuote {
+            amount_sats: target_sats,
+            fee_reserve_sats: 1,
+            expiry_unix: u64::MAX,
+        }),
+        MintBackend::Live => {
+            let destination_lower = destination.to_lowercase();
+            let is_bolt11 = ["lnbc", "lntb", "lnbcrt"]
+                .iter()
+                .any(|&prefix| destination_lower.starts_with(prefix));
+            let is_bolt12 = ["lno1", "lni1"]
+                .iter()
+                .any(|&prefix| destination_lower.starts_with(prefix));
+            if mint_url.is_empty() || !(is_bolt11 || is_bolt12) {
+                return MeltQuoteLookup::Unavailable;
+            } else {
+                let client = match reqwest::Client::builder()
+                    .timeout(Duration::from_secs(10))
+                    .build()
+                    .map_err(|err| {
+                        tracing::error!(error = %err, "mint client");
+                        ApiError::BadRequest(UNREACHABLE.to_string())
+                    }) {
+                    Ok(client) => client,
+                    Err(_) => return MeltQuoteLookup::Unavailable,
+                };
+                let base = mint_url.trim_end_matches('/');
+                let url = if is_bolt11 {
+                    &format!("{base}/v1/melt/quote/bolt11")
+                } else {
+                    &format!("{base}/v1/melt/quote/bolt12")
+                };
+                let melt_quote_response: MeltQuoteResponse = match post_json(
+                    &client,
+                    url,
+                    &MeltQuoteRequest {
+                        request: destination.to_string(),
+                        unit: "sat".to_string(),
+                    },
+                )
+                .await
+                {
+                    Ok(result) => result,
+                    Err(_) => return MeltQuoteLookup::Unavailable,
+                };
+                match melt_quote_response.state {
+                    cashu::MeltQuoteState::Unpaid => {
+                        return MeltQuoteLookup::Quoted(MeltQuote {
+                            amount_sats: melt_quote_response.amount.into(),
+                            fee_reserve_sats: melt_quote_response.fee_reserve.into(),
+                            expiry_unix: melt_quote_response.expiry,
+                        })
+                    }
+                    cashu::MeltQuoteState::Paid => return MeltQuoteLookup::Unavailable,
+                    cashu::MeltQuoteState::Pending => return MeltQuoteLookup::Unavailable,
+                    cashu::MeltQuoteState::Unknown => return MeltQuoteLookup::Unavailable,
+                    cashu::MeltQuoteState::Failed => return MeltQuoteLookup::Unavailable,
+                }
+            }
+        }
     }
 }
 

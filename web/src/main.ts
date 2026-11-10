@@ -339,7 +339,10 @@ function potCard(pot: Pot): HTMLElement {
     line("Target", `${pot.target_sats} sats`),
     line("Contributions counted", String(pot.contribution_count)),
     line("Locked", `${pot.locked_sats} of ${pot.target_sats} sats`),
-    line("Melt fee reserve", `${pot.fee_reserve_sats} sat`),
+    line("Melt fee reserve", pot.fee_quoted && pot.fee_reserve_sats !== null ? `${pot.fee_reserve_sats} sats`: "not quoted yet"),
+    ...(pot.quote_amount_sats !== null && pot.quote_amount_sats !== pot.target_sats
+      ? [line("Invoice amount", `${pot.quote_amount_sats} sats`)]
+      : []),
     line("Still needed", `${pot.sats_still_needed} sats`),
     line("Mint", pot.mint_url === "" ? "not set" : pot.mint_url),
     line("Advertised deadline", formatUnix(pot.deadline_unix)),

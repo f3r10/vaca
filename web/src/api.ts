@@ -36,9 +36,11 @@ export interface Pot {
   fee_reserve_recipient: string;
   sigflag_v1: string;
   sigflag_v2: string;
-  fee_reserve_sats: number;
+  fee_reserve_sats: number | null;
   sats_still_needed: number;
   payout_allowed: boolean;
+  fee_quoted: boolean;
+  quote_amount_sats: number | null;
 }
 
 export interface CreatePotInput {

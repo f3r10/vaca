@@ -27,7 +27,7 @@ A refund backup will be a file the browser downloads. A URL that contains the ke
 
 C, in this repo now: the crate, the Vite + TypeScript page, HTTP and sqlite plumbing, CORS, the demo script, and the regtest mint script.
 
-Y owns the lock rules, the pot state machine, the target-met check including the fee reserve, multi-party signing, the refund flow, and browser key handling. The contributions route counts a proof that passes the lock check and the mint check. `POST /api/pots/{id}/payout` and `/refunds` return 501. Reaching the target does not melt. This mint's reserve is 1 sat, so the locked total has to cover the target plus that sat. Payout still returns 501.
+Y owns the lock rules, the pot state machine, the target-met check including the fee reserve, multi-party signing, the refund flow, and browser key handling. The contributions route counts a proof that passes the lock check and the mint check. `POST /api/pots/{id}/payout` and `/refunds` return 501. Reaching the target does not melt. The gate uses the mint's quote when the destination is BOLT11 or BOLT12. Payout still returns 501.
 
 ## Pins
 

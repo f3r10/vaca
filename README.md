@@ -2,13 +2,13 @@
 
 Vaca is an experimental web app for all-or-nothing pots: a cause, a shared purchase, or splitting a bill. Contributors lock ecash toward a target before a deadline. If the target is met, the pot pays a Lightning destination that was committed when the pot was created. If the deadline passes first, each contributor reclaims their own sats, because the mint enforces a NUT-11 refund key. There is no smart contract.
 
-This repository stores pots. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. Payout and refund still return 501. The server does not sign, melt, or refund.
+This repository stores pots. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. When the locked total covers the target plus the mint's fee reserve, and the advertised deadline has not passed, `POST /api/pots/{id}/payout` adds the server SIG_INPUTS signature to each stored proof. It does not melt, and the pot stays open. Refunds still return 501.
 
 Regtest or Mutinynet only. The hard cap is 100,000 sats per pot.
 
 ## Trust model
 
-v1, the first version that moves sats: the server key is the only pot key (`n_sigs = 1`). The server can spend the locked ecash by itself. That is custodial for theft. Refunds still work when the server is gone, because the mint accepts the contributor's refund key after the lock time. The server key for that version stays in a file outside this repo, mode 600. This skeleton does not create or read that file. Set `VACA_SERVER_KEY_PATH` later; the process only checks whether the path is set and whether a file is there.
+v1, the first version that moves sats: the server key is the only pot key (`n_sigs = 1`). The server can spend the locked ecash by itself. That is custodial for theft. Refunds still work when the server is gone, because the mint accepts the contributor's refund key after the lock time. The server key for that version stays in a file outside this repo, mode 600. Payout reads that file only after the fee gate is open and the advertised deadline has not passed. It does not log the path or the private key. Health still reports only whether the path is set and whether a file is there.
 
 v2, the pitch: the organizer and the server both sign (`n_sigs = 2`). The server co-signs only when the locked total covers the target plus the melt fee reserve, and only for the destination stored at creation. Neither signature is enough on its own. If the organizer and the server both agree, they can still spend, including after the deadline, and they can win the race against refunds.
 
@@ -27,7 +27,7 @@ A refund backup will be a file the browser downloads. A URL that contains the ke
 
 C, in this repo now: the crate, the Vite + TypeScript page, HTTP and sqlite plumbing, CORS, the demo script, and the regtest mint script.
 
-Y owns the lock rules, the pot state machine, the target-met check including the fee reserve, multi-party signing, the refund flow, and browser key handling. The contributions route counts a proof that passes the lock check and the mint check. `POST /api/pots/{id}/payout` and `/refunds` return 501. Reaching the target does not melt. The gate uses the mint's quote when the destination is BOLT11 or BOLT12. Payout still returns 501.
+Y owns the lock rules, the pot state machine, the target-met check including the fee reserve, multi-party signing, the refund flow, and browser key handling. The contributions route counts a proof that passes the lock check and the mint check. `POST /api/pots/{id}/payout` signs each stored proof when the quote amount equals the target, the locked total covers the fee reserve, and the advertised deadline has not passed. `/refunds` returns 501. Reaching the target does not melt. The gate uses the mint's quote when the destination is BOLT11 or BOLT12.
 
 ## Pins
 
@@ -168,7 +168,7 @@ Done when a new visitor can create a refund key, open a pot, and build a lock wi
 
 ## Not in this skeleton
 
-Posting the swapped regtest proofs is a later step. v2 co-signing, the fee-reserve check, melt, and refunds come later. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
+Posting the swapped regtest proofs is a later step. v2 co-signing, the melt, and refunds come later. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
 
 Local git only. No remote.
 

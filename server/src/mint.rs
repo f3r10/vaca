@@ -79,7 +79,7 @@ pub async fn melt_quote(
     mint_url: &str,
     destination: &str,
     target_sats: u64,
-    quote_store: SimpleCache
+    quote_store: SimpleCache,
 ) -> MeltQuoteLookup {
     match backend {
         MintBackend::Scripted(ScriptedMint::Accept) => MeltQuoteLookup::Quoted(MeltQuote {
@@ -157,7 +157,7 @@ pub async fn melt_quote(
                             expiry_unix: melt_quote_response.expiry,
                         };
                         quote_store.set((mint_url.to_string(), destination.to_string()), quote);
-                        return MeltQuoteLookup::Quoted(quote)
+                        return MeltQuoteLookup::Quoted(quote);
                     }
                     cashu::MeltQuoteState::Paid => return MeltQuoteLookup::Unavailable,
                     cashu::MeltQuoteState::Pending => return MeltQuoteLookup::Unavailable,

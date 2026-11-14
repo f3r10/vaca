@@ -33,6 +33,11 @@ CREATE TABLE IF NOT EXISTS contributions (
 );
 ";
 
+pub struct StoredProof {
+    pub id: String,
+    pub proof: String,
+}
+
 pub fn open(path: &Path) -> Result<Connection, String> {
     if let Some(parent) = path.parent() {
         if !parent.as_os_str().is_empty() {
@@ -276,6 +281,54 @@ pub fn get_pot(connection: &Connection, id: &str) -> Result<Option<StoredPot>, A
     }
 }
 
+pub fn proofs_for_pot(connection: &Connection, pot_id: &str) -> Result<Vec<StoredProof>, ApiError> {
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT id, proof FROM contributions WHERE pot_id = ?1"
+        ))
+        .map_err(db_err)?;
+    let rows = statement
+        .query_map(params![pot_id], map_proof)
+        .map_err(db_err)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db_err)?;
+    Ok(rows)
+}
+
+pub fn update_proof_for_pot(
+    connection: &Connection,
+    proof: &str,
+    id: &str,
+    pot_id: &str,
+) -> Result<(), ApiError> {
+    let mut statement = connection
+        .prepare(&format!(
+            "UPDATE contributions SET proof = ?1 WHERE id = ?2 AND pot_id = ?3"
+        ))
+        .map_err(db_err)?;
+    let changed = statement.execute([proof, id, pot_id]).map_err(db_err)?;
+
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(ApiError::Database)
+    }
+}
+
+/// Replaces every stored proof, or none of them. `rows` is `(contribution id, proof json)`.
+pub fn update_proofs_for_pot(
+    connection: &mut Connection,
+    pot_id: &str,
+    rows: &[(String, String)],
+) -> Result<(), ApiError> {
+    let tx = connection.transaction().map_err(db_err)?;
+    for (id, proof) in rows {
+        update_proof_for_pot(&tx, proof, id, pot_id)?;
+    }
+    tx.commit().map_err(db_err)?;
+    Ok(())
+}
+
 #[cfg(test)]
 fn contributions_store_a_proof(connection: &Connection) -> Result<bool, ApiError> {
     let count: i64 = connection
@@ -305,6 +358,13 @@ SELECT
     p.mint_url
 FROM pots p
 ";
+
+fn map_proof(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredProof> {
+    Ok(StoredProof {
+        id: row.get(0)?,
+        proof: row.get(1)?,
+    })
+}
 
 fn map_pot(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredPot> {
     let target: i64 = row.get(3)?;
@@ -486,6 +546,62 @@ mod tests {
         );
         let untouched = remember_missing_mint(&connection, "").expect("blank");
         assert_eq!(untouched, 0);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_failed_signature_write_keeps_every_proof_unsigned() {
+        let path = std::env::temp_dir().join(format!("vaca-db-{}.sqlite", uuid::Uuid::new_v4()));
+        let mut connection = open(&path).expect("open");
+        let pot = NewPot {
+            title: "Cause".to_string(),
+            kind: "cause".to_string(),
+            target_sats: 1_000,
+            deadline_unix: 1_800_000_000,
+            destination: "lno1qq".to_string(),
+            organizer_pubkey: None,
+        };
+        insert_pot(&connection, "pot-1", &pot, "http://127.0.0.1:9", 1_700_000_000).expect("pot");
+        insert_contributions(
+            &mut connection,
+            "pot-1",
+            1_001,
+            &[
+                NewContribution {
+                    amount_sats: 500,
+                    secret: "one".to_string(),
+                    proof: "unsigned-one".to_string(),
+                },
+                NewContribution {
+                    amount_sats: 501,
+                    secret: "two".to_string(),
+                    proof: "unsigned-two".to_string(),
+                },
+            ],
+            1_700_000_001,
+        )
+        .expect("rows");
+        let stored = proofs_for_pot(&connection, "pot-1").expect("proofs");
+        let err = update_proofs_for_pot(
+            &mut connection,
+            "pot-1",
+            &[
+                (stored[0].id.clone(), "signed-one".to_string()),
+                ("missing-row".to_string(), "signed-two".to_string()),
+            ],
+        )
+        .expect_err("missing row");
+        assert!(matches!(err, ApiError::Database));
+        let mut texts: Vec<String> = proofs_for_pot(&connection, "pot-1")
+            .expect("proofs")
+            .into_iter()
+            .map(|proof| proof.proof)
+            .collect();
+        texts.sort();
+        assert_eq!(
+            texts,
+            vec!["unsigned-one".to_string(), "unsigned-two".to_string()]
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

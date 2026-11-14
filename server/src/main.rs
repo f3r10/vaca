@@ -63,7 +63,7 @@ async fn main() {
         config: Arc::new(config),
         db: Arc::new(Mutex::new(connection)),
         mint: mint::MintBackend::Live,
-        quote_cache
+        quote_cache,
     };
     let app = http::router(state);
     let listener = match tokio::net::TcpListener::bind(bind).await {

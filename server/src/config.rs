@@ -33,9 +33,11 @@ pub struct Config {
     pub grace_seconds: u64,
     pub cors_origin: String,
     pub experimental: bool,
-    /// Location of the server key. The file is never opened or logged.
+    /// Location of the server key. Payout opens this file after the fee gate
+    /// and the deadline check pass. The path is not logged.
     pub server_key_path: Option<PathBuf>,
-    /// Compressed public key from `VACA_SERVER_PUBKEY`. The key file is not read.
+    /// Compressed public key from `VACA_SERVER_PUBKEY`. Payout compares it with
+    /// the key file. Startup does not read the file.
     pub server_pubkey: Option<String>,
 }
 

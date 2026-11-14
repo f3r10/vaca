@@ -2,8 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     config::{
-        FEE_RESERVE_RECIPIENT, GRACE_SECONDS, MELT_FEE_RESERVE_MIN_SATS,
-        SIGFLAG_V1, SIGFLAG_V2,
+        FEE_RESERVE_RECIPIENT, GRACE_SECONDS, MELT_FEE_RESERVE_MIN_SATS, SIGFLAG_V1, SIGFLAG_V2,
     },
     mint,
 };

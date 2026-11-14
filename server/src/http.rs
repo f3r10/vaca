@@ -1,10 +1,14 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
+use std::path::PathBuf;
+use std::str::FromStr;
 use std::sync::{Arc, Mutex, RwLock};
 
 use axum::extract::{Path, State};
 use axum::http::{HeaderValue, Method, StatusCode};
 use axum::routing::{get, post};
 use axum::{Json, Router};
+use cashu::SecretKey;
 use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 use tower_http::cors::{AllowOrigin, CorsLayer};
@@ -13,7 +17,7 @@ use crate::config::{
     Config, CASHU_TS_COMMIT, CASHU_TS_VERSION, CDK_GIT_REV, FEE_RESERVE_RECIPIENT, SIGFLAG_V1,
     SIGFLAG_V2,
 };
-use crate::db::{self, NewContribution};
+use crate::db::{self, NewContribution, StoredProof};
 use crate::error::ApiError;
 use crate::lock;
 use crate::mint::{self, melt_quote, MeltQuote, MintBackend};
@@ -32,7 +36,10 @@ impl SimpleCache {
     }
 
     pub fn set(&self, key: (String, String), value: MeltQuote) {
-        self.store.write().unwrap_or_else(|err| err.into_inner()).insert(key, value);
+        self.store
+            .write()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(key, value);
     }
 
     pub fn get_fresh(&self, key: &(String, String), now_unix: u64) -> Option<MeltQuote> {
@@ -98,7 +105,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/pots", get(list_pots).post(create_pot))
         .route("/api/pots/{id}", get(get_pot))
         .route("/api/pots/{id}/contributions", post(post_contribution))
-        .route("/api/pots/{id}/payout", post(payout_unimplemented))
+        .route("/api/pots/{id}/payout", post(payout))
         .route("/api/pots/{id}/refunds", post(refunds_unimplemented))
         .fallback(not_found)
         .layer(cors)
@@ -149,7 +156,7 @@ async fn list_pots(State(state): State<AppState>) -> Result<Json<PotList>, ApiEr
                     &pot.mint_url,
                     &pot.destination,
                     pot.target_sats,
-                    state.quote_cache.clone()
+                    state.quote_cache.clone(),
                 )
                 .await
             }
@@ -176,7 +183,7 @@ async fn get_pot(
                 &pot.mint_url,
                 &pot.destination,
                 pot.target_sats,
-                state.quote_cache.clone()
+                state.quote_cache.clone(),
             )
             .await
         }
@@ -213,7 +220,7 @@ async fn create_pot(
                 &stored.mint_url,
                 &stored.destination,
                 stored.target_sats,
-                state.quote_cache.clone()
+                state.quote_cache.clone(),
             )
             .await
         }
@@ -270,7 +277,7 @@ async fn post_contribution(
                 &pot.mint_url,
                 &pot.destination,
                 pot.target_sats,
-                state.quote_cache.clone()
+                state.quote_cache.clone(),
             )
             .await
         }
@@ -392,11 +399,129 @@ fn parse_proofs(incoming: &[IncomingProof]) -> Result<Vec<cashu::Proof>, ApiErro
     Ok(proofs)
 }
 
-async fn payout_unimplemented(
+struct KeyPair {
+    pubkey: String,
+    privkey: String,
+}
+
+fn read_keys(path: &PathBuf) -> Result<KeyPair, ApiError> {
+    let content = fs::read_to_string(path)
+        .map_err(|_err| ApiError::BadRequest("The server key is not set.".to_string()))?;
+    let mut pubkey = None;
+    let mut privkey = None;
+
+    for line in content.lines() {
+        let mut parts = line.split_whitespace();
+        if let (Some(key), Some(value)) = (parts.next(), parts.next()) {
+            match key {
+                "pubkey" => pubkey = Some(value.to_string()),
+                "privkey" => privkey = Some(value.to_string()),
+                _ => {} // Ignore unknown keys or handle them
+            }
+        }
+    }
+    Ok(KeyPair {
+        pubkey: pubkey
+            .ok_or_else(|| ApiError::BadRequest("The server key is not set.".to_string()))?,
+        privkey: privkey
+            .ok_or_else(|| ApiError::BadRequest("The server key is not set.".to_string()))?,
+    })
+}
+
+async fn payout(
     State(state): State<AppState>,
     Path(id): Path<String>,
-) -> Result<(), ApiError> {
-    refuse_money_route(&state, &id, "payout")
+) -> Result<Json<PotView>, ApiError> {
+    let pot = require_pot(&state, &id)?;
+    let melt_quote_lookup = match state.quote_cache.get_fresh(
+        &(pot.mint_url.clone(), pot.destination.clone()),
+        now_unix() as u64,
+    ) {
+        Some(quoted) => mint::MeltQuoteLookup::Quoted(quoted),
+        None => {
+            melt_quote(
+                &state.mint,
+                &pot.mint_url,
+                &pot.destination,
+                pot.target_sats,
+                state.quote_cache.clone(),
+            )
+            .await
+        }
+    };
+
+    let (preview, _) = pot.view(&melt_quote_lookup);
+    if !preview.payout_allowed {
+        tracing::info!(pot_id = %id, "The pot has not reached the target plus the fee reserve.");
+        return Err(ApiError::BadRequest(
+            "The pot has not reached the target plus the fee reserve.".to_string(),
+        ));
+    }
+
+    if now_unix() > pot.deadline_unix {
+        return Err(reject(&id, "The deadline has passed."));
+    }
+
+    let Some(key_path) = &state.config.server_key_path else {
+        return Err(ApiError::BadRequest(
+            "The server key is not set.".to_string(),
+        ));
+    };
+    let keys = read_keys(key_path)?;
+    let parsed_privkey = SecretKey::from_str(&keys.privkey)
+        .map_err(|_err| ApiError::BadRequest("The server key is not set.".to_string()))?;
+
+    if Some(parsed_privkey.public_key().to_string()) != state.config.server_pubkey {
+        return Err(ApiError::BadRequest(
+            "The server key is not set.".to_string(),
+        ));
+    }
+    if state.config.server_pubkey != Some(keys.pubkey) {
+        return Err(ApiError::BadRequest(
+            "The server key is not set.".to_string(),
+        ));
+    }
+    let mut proofs: Vec<(StoredProof, cashu::Proof)> = vec![];
+    for proof in with_db_mut(&state, |connection| db::proofs_for_pot(connection, &id))?.into_iter()
+    {
+        if proof.proof.is_empty() {
+            return Err(ApiError::BadRequest(mint::SIGNED.to_string()));
+        }
+        let mut parsed: cashu::Proof = match serde_json::from_str::<cashu::Proof>(&proof.proof) {
+            Ok(parsed_proof) => parsed_proof,
+            Err(_) => return Err(ApiError::BadRequest(mint::SIGNED.to_string())),
+        };
+        match parsed.verify_p2pk() {
+            Ok(_) => {
+                proofs.push((proof, parsed));
+            }
+            Err(_) => {
+                parsed
+                    .sign_p2pk(parsed_privkey.clone())
+                    .map_err(|_err| ApiError::BadRequest(mint::SIGNED.to_string()))?;
+                parsed.verify_p2pk().map_err(|_err| {
+                    ApiError::BadRequest(
+                        "The server key does not match this pot's lock.".to_string(),
+                    )
+                })?;
+                proofs.push((proof, parsed));
+            }
+        };
+    }
+    // Sign in memory first. The database changes only after every proof is signed,
+    // and one transaction commits those rows together.
+    let signed = proofs
+        .iter()
+        .map(|(stored, parsed)| {
+            let proof_json = serde_json::to_string(parsed)
+                .map_err(|_err| ApiError::BadRequest(mint::SIGNED.to_string()))?;
+            Ok((stored.id.clone(), proof_json))
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    with_db_mut(&state, |connection| {
+        db::update_proofs_for_pot(connection, &pot.id, &signed)
+    })?;
+    Ok(Json(preview))
 }
 
 async fn refunds_unimplemented(
@@ -449,7 +574,10 @@ mod tests {
     #[test]
     fn fresh_quote_is_reused_until_it_expires() {
         let cache = SimpleCache::new();
-        let key = ("http://127.0.0.1:8085".to_string(), "lnbc1quote".to_string());
+        let key = (
+            "http://127.0.0.1:8085".to_string(),
+            "lnbc1quote".to_string(),
+        );
         cache.set(
             key.clone(),
             MeltQuote {
@@ -497,6 +625,34 @@ mod tests {
             db: Arc::new(Mutex::new(connection)),
             mint,
             quote_cache,
+        };
+        (router(state), path)
+    }
+
+    fn open_app_with_server_key(
+        server_pubkey: String,
+        key_path: PathBuf,
+        mint: MintBackend,
+        mint_url: String,
+    ) -> (Router, std::path::PathBuf) {
+        let path = std::env::temp_dir().join(format!("vaca-http-{}.sqlite", uuid::Uuid::new_v4()));
+        let config = Config {
+            bind: "127.0.0.1:9".parse().unwrap(),
+            mint_url,
+            db_path: path.clone(),
+            max_pot_sats: 100_000,
+            grace_seconds: 600,
+            cors_origin: "http://127.0.0.1:5173".to_string(),
+            experimental: true,
+            server_key_path: Some(key_path),
+            server_pubkey: Some(server_pubkey),
+        };
+        let connection = db::open(&path).expect("db");
+        let state = AppState {
+            config: Arc::new(config),
+            db: Arc::new(Mutex::new(connection)),
+            mint,
+            quote_cache: SimpleCache::new(),
         };
         (router(state), path)
     }
@@ -628,21 +784,31 @@ mod tests {
         let proofs = serde_json::json!({
             "proofs": [{"secret": "not-a-real-secret", "witness": {"signatures": ["aa"]}}]
         });
-        for route in ["payout", "refunds"] {
-            let response = app
-                .clone()
-                .oneshot(post_json(
-                    &format!("/api/pots/{id}/{route}"),
-                    proofs.clone(),
-                ))
-                .await
-                .unwrap();
-            assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
-            let body = json_body(response).await;
-            assert_eq!(body["error"], "not_implemented");
-            assert_eq!(body["route"], route);
-            assert_eq!(body["owner"], "Y");
-        }
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/refunds"),
+                proofs.clone(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        let body = json_body(response).await;
+        assert_eq!(body["error"], "not_implemented");
+        assert_eq!(body["route"], "refunds");
+        assert_eq!(body["owner"], "Y");
+
+        let response = app
+            .clone()
+            .oneshot(post_json(&format!("/api/pots/{id}/payout"), proofs.clone()))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(response).await;
+        assert_eq!(
+            body["message"],
+            "The pot has not reached the target plus the fee reserve."
+        );
         let rejected = app
             .clone()
             .oneshot(post_json(&format!("/api/pots/{id}/contributions"), proofs))
@@ -890,11 +1056,10 @@ mod tests {
             .oneshot(post_json(&format!("/api/pots/{id}/payout"), proofs.clone()))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = json_body(response).await;
-        assert_eq!(body["error"], "not_implemented");
-        assert_eq!(body["route"], "payout");
-        assert_eq!(body["owner"], "Y");
+        assert_eq!(body["error"], "bad_request");
+        assert_eq!(body["message"], "The server key is not set.");
         let _ = std::fs::remove_file(path);
     }
 
@@ -964,12 +1129,185 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = json_body(response).await;
-        assert_eq!(body["error"], "not_implemented");
-        assert_eq!(body["route"], "payout");
-        assert_eq!(body["owner"], "Y");
+        assert_eq!(body["message"], "The server key is not set.");
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn payout_signs_each_stored_proof_once() {
+        let key = SecretKey::generate();
+        let server = key.public_key().to_string();
+        let refund = compressed("03", "22");
+        let key_path =
+            std::env::temp_dir().join(format!("vaca-server-key-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &key_path,
+            format!("pubkey {server}\nprivkey {}\n", key.to_secret_hex()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let (app, path) = open_app_with_server_key(
+            server.clone(),
+            key_path.clone(),
+            MintBackend::Scripted(crate::mint::ScriptedMint::Accept),
+            "http://127.0.0.1:9".to_string(),
+        );
+        let created = create_cause(&app, 1_000).await;
+        let id = created["id"].as_str().unwrap().to_string();
+        let locktime = created["locktime_unix"].as_i64().unwrap();
+        let secret = v1_secret_nonce(&server, &refund, locktime, "sign-1001");
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/contributions"),
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "proofs": [signed_proof(&secret, 1001)],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/payout"),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["status"], "open");
+        assert_eq!(body["payout_allowed"], true);
+        assert!(body.get("signatures").is_none());
+        assert!(body.get("secret").is_none());
+        assert_eq!(signature_count(&path, &id), 1);
+
+        let again = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/payout"),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(again.status(), StatusCode::OK);
+        assert_eq!(signature_count(&path, &id), 1);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&key_path);
+    }
+
+    #[tokio::test]
+    async fn payout_refuses_a_funded_pot_after_the_deadline() {
+        let key = SecretKey::generate();
+        let server = key.public_key().to_string();
+        let refund = compressed("03", "22");
+        let key_path =
+            std::env::temp_dir().join(format!("vaca-server-key-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &key_path,
+            format!("pubkey {server}\nprivkey {}\n", key.to_secret_hex()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let (app, path) = open_app_with_server_key(
+            server.clone(),
+            key_path.clone(),
+            MintBackend::Scripted(crate::mint::ScriptedMint::Accept),
+            "http://127.0.0.1:9".to_string(),
+        );
+        let created = create_cause(&app, 1_000).await;
+        let id = created["id"].as_str().unwrap().to_string();
+        let locktime = created["locktime_unix"].as_i64().unwrap();
+        let secret = v1_secret_nonce(&server, &refund, locktime, "late-1001");
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/contributions"),
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "proofs": [signed_proof(&secret, 1001)],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let changed = connection
+            .execute(
+                "UPDATE pots SET deadline_unix = ?1 WHERE id = ?2",
+                rusqlite::params![1_700_000_000_i64, id],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+        drop(connection);
+
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/payout"),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["message"],
+            "The deadline has passed."
+        );
+        assert_eq!(signature_count_without_verifying(&path, &id), 0);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&key_path);
+    }
+
+    fn signature_count(path: &std::path::Path, pot_id: &str) -> usize {
+        let connection = rusqlite::Connection::open(path).unwrap();
+        let stored: String = connection
+            .query_row(
+                "SELECT proof FROM contributions WHERE pot_id = ?1",
+                [pot_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let proof: cashu::Proof = serde_json::from_str(&stored).unwrap();
+        proof.verify_p2pk().expect("stored proof verifies");
+        proof
+            .witness
+            .as_ref()
+            .and_then(|witness| witness.signatures())
+            .map(|signatures| signatures.len())
+            .unwrap_or(0)
+    }
+
+    fn signature_count_without_verifying(path: &std::path::Path, pot_id: &str) -> usize {
+        let connection = rusqlite::Connection::open(path).unwrap();
+        let stored: String = connection
+            .query_row(
+                "SELECT proof FROM contributions WHERE pot_id = ?1",
+                [pot_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let proof: cashu::Proof = serde_json::from_str(&stored).unwrap();
+        proof
+            .witness
+            .as_ref()
+            .and_then(|witness| witness.signatures())
+            .map(|signatures| signatures.len())
+            .unwrap_or(0)
     }
 
     #[tokio::test]

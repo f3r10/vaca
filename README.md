@@ -191,21 +191,6 @@ node scripts/mint-test-token.mjs 100 ~/Downloads/vaca-test-token.cashu
 
 The amount defaults to 100 sats. The path defaults to `~/Downloads/vaca-test-token.cashu`. `VACA_MINT_URL` defaults to `http://127.0.0.1:8085`. The file is mode 600. The script refuses to replace a file that already exists.
 
-## Later: page layout
-
-The page works as a sequence of controls, and it is hard to use. This pass is
-layout and wording only. Do not change `createSecret`, `secretMatchesPot`, or
-the payout and refund routes while doing it.
-
-- The trust text is repeated in full on the home page and on every pot, above the action.
-- "Create refund key" has no section around it. Each click adds another pubkey paragraph.
-- On a pot, the button says "generate". The field label is "compresed pubkey". Alerts are extra `h1` and `h2` elements, and each click adds more of them.
-- A failed `createSecret` has no message on the page.
-- The secret is shown with no label. Long pubkeys and secrets need a place to wrap.
-- There is no `primary` style. The home page is a stack of unrelated blocks.
-
-Done when a new visitor can create a refund key, open a pot, and build a lock without reading the source. The private key stays off the page, out of the URL, and out of `localStorage`.
-
 ## Not in this skeleton
 
 v2 co-signing comes later. The refund route returns proofs after the lock time. The page swaps them and downloads a token. The server does not spend them. NUT-08 change is stored on payout. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.

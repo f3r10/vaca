@@ -93,3 +93,21 @@ export function amountLine(pot: Pot): { locked: string; target: string } {
 function capitalize(s: string): string {
   return s.charAt(0).toUpperCase() + s.slice(1);
 }
+
+/** Timings, keys and flags for people who want the details. */
+export function formatTechnical(getPot: () => Pot): HTMLElement {
+  const pot = getPot();
+  const row = (label: string, value: string | Node) => fact(label, value);
+  const key = (k: string | null) => (k ? h("span", { class: "mono wrap" }, k) : "Not set");
+  return h(
+    "dl",
+    { class: "facts" },
+    row("Advertised deadline", formatDate(pot.deadline_unix)),
+    row("Server stops paying out", formatDate(pot.co_sign_until_unix)),
+    row("Refund lock time", `${formatDate(pot.locktime_unix)} (deadline + ${pot.grace_seconds / 60} min)`),
+    row("Unused fee reserve goes to", `the ${pot.fee_reserve_recipient}`),
+    row("Server public key", key(pot.server_pubkey)),
+    row("Organizer public key", key(pot.organizer_pubkey)),
+    row("Pot id", h("span", { class: "mono wrap" }, pot.id)),
+  );
+}

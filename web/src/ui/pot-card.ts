@@ -5,12 +5,17 @@ import { hostOf } from "../format";
 import { t } from "../strings";
 import { churn } from "./churn";
 import { h } from "./dom";
+import { transitionName } from "./pot-row";
 import { deadlineBlock, facts, graceNote, kindChip, statusBadge } from "./pot-parts";
 
 /** Problems the API cannot tell apart yet. Only the preview page passes these. */
 export type Problem = "mint-unreachable" | "quote-expired";
 
+export type CardAction = "contribute" | "payout" | "reclaim" | "retry";
+
 export interface PotCardOptions {
+  /** Called when a button on the card is pressed. */
+  on?: (action: CardAction) => void;
   problem?: Problem;
   /** Set after this contributor reclaimed. A result of their action, not a pot status. */
   reclaimedSats?: number;
@@ -18,9 +23,10 @@ export interface PotCardOptions {
   fromFraction?: number;
 }
 
-function button(label: string, primary: boolean, disabled = false): HTMLButtonElement {
+function button(label: string, primary: boolean, o: PotCardOptions, act: CardAction, disabled = false): HTMLButtonElement {
   const b = h("button", { type: "button", class: primary ? "btn btn-primary" : "btn" }, label);
   if (disabled) b.disabled = true;
+  b.addEventListener("click", () => o.on?.(act));
   return b;
 }
 
@@ -37,12 +43,12 @@ function action(pot: Pot, now: number, o: PotCardOptions): HTMLElement | null {
   if (phase.phase === "grace") return graceNote(pot);
   if (phase.phase === "refundable") {
     if (o.reclaimedSats !== undefined) return null;
-    return button(t.cta.reclaim, true);
+    return button(t.cta.reclaim, true, o, "reclaim");
   }
-  if (o.problem === "mint-unreachable") return button(t.problem.retry, true);
-  if (!destinationOk(pot)) return button(t.cta.contribute, false, true);
-  if (phase.funding === "ready") return button(t.cta.payout, true);
-  return button(t.cta.contribute, true);
+  if (o.problem === "mint-unreachable") return button(t.problem.retry, true, o, "retry");
+  if (!destinationOk(pot)) return button(t.cta.contribute, false, o, "contribute", true);
+  if (phase.funding === "ready") return button(t.cta.payout, true, o, "payout");
+  return button(t.cta.contribute, true, o, "contribute");
 }
 
 function celebration(pot: Pot): HTMLElement {
@@ -93,7 +99,7 @@ export function potCard(pot: Pot, now: number, o: PotCardOptions = {}): HTMLElem
     "article",
     { class: "pot", "aria-labelledby": `pot-title-${pot.id}` },
     h("div", { class: "pot-meta" }, kindChip(pot.kind), statusBadge(phase)),
-    h("h1", { class: "pot-title", id: `pot-title-${pot.id}` }, pot.title),
+    h("h1", { class: "pot-title", id: `pot-title-${pot.id}`, style: `view-transition-name:${transitionName(pot.id)}` }, pot.title),
     phase.phase === "open" && phase.funding === "ready" ? celebration(pot) : null,
     h(
       "p",

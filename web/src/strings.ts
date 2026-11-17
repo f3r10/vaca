@@ -44,4 +44,128 @@ export const en = {
   percentLocked: (p: number) => `${p}% of the target`,
 } as const;
 
+
+/** Server messages mapped to plain copy. Unknown messages fall through unchanged. */
+export const serverErrors: [string, string][] = [
+  ["This pot is already paid.", "This pot has already paid out."],
+  ["Mint URL is not set.", "This pot has no mint set, so it can't take sats."],
+  ["The deadline has passed.", "The deadline has passed, so the pot is closed."],
+  ["The secret is not this pot's lock.", "Those proofs aren't locked to this pot. Try again with a fresh token."],
+  ["That amount passes the target plus the fee reserve.", "That is more than the pot still needs. Use a smaller token."],
+  ["This proof is already counted.", "The pot has already counted those proofs."],
+  ["The mint did not sign this proof.", "The mint didn't accept those proofs as genuine."],
+  ["The proof is not spendable.", "Those ecash proofs were already spent."],
+  ["The mint could not be reached.", "Can't reach the mint right now. Nothing was lost. Try again in a moment."],
+  ["The pot has not reached the target plus the fee reserve.", "The pot hasn't reached its target plus the fee reserve yet."],
+  ["The mint did not pay this pot.", "The mint didn't pay the destination. The pot is still open, so nothing is lost. Try again later."],
+  ["The mint has not finished this payment.", "The mint is still working on the payment. Check again in a minute."],
+  ["The server key is not set.", "The server has no signing key, so it can't pay out."],
+  ["The server key does not match this pot's lock.", "The server's key doesn't match this pot's lock, so it can't pay out."],
+  ["The refund lock has not expired.", "Refunds open after the lock time. Try again then."],
+  ["No proof is locked to that refund key.", "No sats in this pot are locked to that key. Check that you chose the right key file."],
+  ["The refund key is not a compressed public key.", "That key file doesn't hold a valid refund key."],
+  ["No pot with that id.", "There is no pot at this link."],
+  ["The pot store failed.", "The server hit a problem saving this. Try again."],
+];
+
+export const app = {
+  nav: { home: "Pots", how: "How it works", create: "Create a pot" },
+  banner: "Experimental. Regtest only: use test money, never real funds.",
+  serverDown: "Can't reach the Vaca server.",
+  serverDownHelp: "Check that it's running, then try again.",
+  retry: "Try again",
+  loading: "Loading…",
+  home: {
+    title: "Everyone chips in, or nobody pays.",
+    lede: "A pot collects ecash toward a target. If it's met before the deadline, the pot pays a Lightning invoice fixed at the start. If not, everyone reclaims their own sats.",
+    create: "Create a pot",
+    how: "How it works",
+    pots: "Pots",
+    empty: "No pots yet.",
+    emptyHelp: "Create the first one and share its link.",
+  },
+  pot: {
+    back: "All pots",
+    share: "Share this pot",
+    shareHelp: "Anyone with this link can contribute.",
+    details: "Technical details",
+    trustTitle: "Who can spend your sats",
+    trust: [
+      "In this first version the Vaca server's key alone can spend locked sats. Treat it as test money.",
+      "After the lock time (the deadline plus 10 minutes) your refund key can spend them too. The mint accepts whichever valid spend arrives first, so reclaim promptly.",
+      "The mint is trusted, as with any Cashu mint. If you lose your refund key, you lose your refund. Vaca can't recover it.",
+    ],
+    trustLink: "Read how it works",
+    closed: "Contributions are closed for this pot.",
+  },
+} as const;
+
+export const create = {
+  title: "Create a pot",
+  lede: "Set the target, the deadline and where the money goes. The destination is fixed once the pot exists.",
+  kind: "What is it for?",
+  kinds: {
+    cause: ["Cause", "Raise money for something you all care about."],
+    purchase: ["Shared purchase", "Chip in together to buy one thing."],
+    split_bill: ["Split the bill", "Everyone pays their share of one invoice."],
+  } as Record<string, [string, string]>,
+  titleLabel: "Name",
+  titleHint: (max: number) => `Up to ${max} characters.`,
+  targetLabel: "Target",
+  targetHint: (cap: number) => `From 1 to ${cap.toLocaleString("en")} sats. The pot also needs a small fee reserve on top.`,
+  deadlineLabel: "Deadline",
+  deadlineHint: "Contributors lock sats before this time. If the target isn't met by then, they reclaim.",
+  destLabel: { default: "Where the money goes", split_bill: "The bill's invoice" },
+  destHint: {
+    default: "A Lightning invoice (BOLT11) or offer (BOLT12). It can't be changed later.",
+    split_bill: "Paste the BOLT11 invoice for the bill. It can't be changed later.",
+  },
+  destLooksOk: (kind: string) => `Looks like a ${kind}.`,
+  destLooksOff: "This doesn't look like a Lightning invoice or offer. The pot would only be able to refund.",
+  advanced: "Advanced: organizer key",
+  organizerLabel: "Organizer public key (optional)",
+  organizerHint: "A compressed key: 66 hex characters starting with 02 or 03.",
+  submit: "Create pot",
+  submitting: "Creating…",
+  errors: {
+    titleEmpty: "Give the pot a name.",
+    titleLong: (max: number) => `Keep the name under ${max} characters.`,
+    titleControl: "The name can't contain control characters.",
+    target: (cap: number) => `Enter a whole number from 1 to ${cap.toLocaleString("en")}.`,
+    deadlineInvalid: "Enter a valid date and time.",
+    deadlinePast: "Pick a time in the future.",
+    deadlineFar: "Pick a date within 366 days.",
+    destEmpty: "Enter where the money should go.",
+    destLong: (max: number) => `Keep it under ${max} characters.`,
+    destControl: "The destination can't contain control characters.",
+    organizer: "Use 66 hex characters starting with 02 or 03, or leave it empty.",
+  },
+} as const;
+
+export const how = {
+  title: "How a pot works",
+  lede: "A pot only pays if it reaches its target in time. Otherwise everyone gets their own sats back. No one has to trust the organizer with the money.",
+  steps: [
+    ["Lock", "Each contributor locks ecash to the pot. The lock names two keys: the pot's key, and the contributor's own refund key. The mint enforces the lock."],
+    ["Target met", "When the locked total covers the target plus a small fee reserve, before the deadline, the pot can pay."],
+    ["Pay", "The server asks the mint to pay the Lightning destination that was fixed when the pot was created. The pot is marked paid only after the mint confirms."],
+    ["Or reclaim", "If the deadline passes first, each contributor reclaims their own sats with their refund key. The mint accepts it, so it works even if the server is gone."],
+  ],
+  lanes: { good: "If the target is met in time", bad: "If the deadline passes first" },
+  whoTitle: "Who can spend what, and when",
+  who: [
+    ["Before the deadline", "The pot's key can pay the destination once the target is covered. Your refund key can't spend yet."],
+    ["The 10 minutes after the deadline", "The server stops paying out. Your refund key isn't valid yet either, so nothing moves."],
+    ["After that, the lock time", "Both keys can spend, and the mint accepts whichever valid spend arrives first. If the pot's key got there first, the sats are gone. Reclaim as soon as the lock time passes."],
+  ],
+  trustTitle: "What you're trusting",
+  trust: [
+    "The server. In this first version its key alone can spend locked sats, so a dishonest or hacked server could take them. Refunds still work without the server.",
+    "The mint. As with any Cashu mint, it holds the money and can refuse to honour it.",
+    "Your refund key file. Lose it and you lose your refund. Vaca keeps no copy.",
+    "Coming later: the organizer and the server must both sign, so neither can spend alone. That isn't built yet.",
+  ],
+  back: "Back to pots",
+} as const;
+
 export const t = en;

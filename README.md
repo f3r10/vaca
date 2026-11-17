@@ -2,7 +2,7 @@
 
 Vaca is an experimental web app for all-or-nothing pots: a cause, a shared purchase, or splitting a bill. Contributors lock ecash toward a target before a deadline. If the target is met, the pot pays a Lightning destination that was committed when the pot was created. If the deadline passes first, each contributor reclaims their own sats, because the mint enforces a NUT-11 refund key. There is no smart contract.
 
-This repository stores pots. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. When the locked total covers the target plus the mint's fee reserve, and the advertised deadline has not passed, `POST /api/pots/{id}/payout` adds the server SIG_INPUTS signature to each stored proof. It does not melt, and the pot stays open. Refunds still return 501.
+This repository stores pots. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. When the locked total covers the target plus the mint's fee reserve, and the advertised deadline has not passed, `POST /api/pots/{id}/payout` signs each stored proof and asks the mint to pay the destination. The pot becomes `paid` only when the mint says the payment is paid. A mint failure leaves the pot open. Unused fee reserve is not returned yet. Refunds still return 501.
 
 Regtest or Mutinynet only. The hard cap is 100,000 sats per pot.
 
@@ -22,7 +22,7 @@ Vaca does not implement NUT-11. The mint does: `cdk-mintd` advertises NUT-11 and
 
 **Spending.**
 
-- Payout: once the fee gate is open and before the advertised deadline, the server signs each stored proof with the pot key (`sign_p2pk` in `server/src/http.rs`, SIG_INPUTS, one signature per proof). The melt to the Lightning destination is not written yet.
+- Payout: once the fee gate is open and before the advertised deadline, the server signs each stored proof with the pot key (`sign_p2pk` in `server/src/http.rs`, SIG_INPUTS, one signature per proof) and posts those proofs to the mint's melt route. The pot is `paid` only after the mint reports `Paid`. No NUT-08 change outputs are sent, so the mint keeps any unused reserve. A failed melt leaves the signatures in place and the pot `open`.
 - Refund: after the lock time, the mint accepts a signature from the contributor's refund key. The mint enforces this, so refunds do not need the server. The refund route in this repository still returns 501.
 
 The limits are in the trust model below: after the lock time both paths are valid, and in v1 the server key alone can spend.
@@ -183,7 +183,7 @@ Done when a new visitor can create a refund key, open a pot, and build a lock wi
 
 ## Not in this skeleton
 
-Posting the swapped regtest proofs is a later step. v2 co-signing, the melt, and refunds come later. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
+Posting the swapped regtest proofs is a later step. v2 co-signing, NUT-08 change, and refunds come later. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
 
 Local git only. No remote.
 

@@ -14,7 +14,7 @@ CREATE TABLE IF NOT EXISTS pots (
     deadline_unix INTEGER NOT NULL,
     destination TEXT NOT NULL,
     organizer_pubkey TEXT,
-    status TEXT NOT NULL CHECK (status = 'open'),
+    status TEXT NOT NULL CHECK (status IN ('open', 'paid')),
     created_at_unix INTEGER NOT NULL,
     -- Copied from VACA_MINT_URL when the pot is created. NULL is an older row
     -- that startup has not filled yet. Proof checks use this value.
@@ -44,19 +44,19 @@ pub fn open(path: &Path) -> Result<Connection, String> {
             std::fs::create_dir_all(parent).map_err(|err| err.to_string())?;
         }
     }
-    let connection = Connection::open(path).map_err(|err| err.to_string())?;
+    let mut connection = Connection::open(path).map_err(|err| err.to_string())?;
     connection
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(|err| err.to_string())?;
     connection
         .execute_batch(SCHEMA)
         .map_err(|err| err.to_string())?;
-    migrate(&connection)?;
+    migrate(&mut connection)?;
     Ok(connection)
 }
 
 /// Adds columns that `CREATE TABLE IF NOT EXISTS` leaves missing on an old file.
-fn migrate(connection: &Connection) -> Result<(), String> {
+fn migrate(connection: &mut Connection) -> Result<(), String> {
     if !has_column(connection, "amount_sats")? {
         connection
             .execute(
@@ -92,6 +92,66 @@ fn migrate(connection: &Connection) -> Result<(), String> {
             [],
         )
         .map_err(|err| err.to_string())?;
+    allow_paid_status(connection)?;
+    Ok(())
+}
+
+/// SQLite cannot change a CHECK with ALTER TABLE. An old file only allows
+/// `open`, so the rows move to a new table that also allows `paid`.
+fn allow_paid_status(connection: &mut Connection) -> Result<(), String> {
+    if pots_allow_paid(connection)? {
+        return Ok(());
+    }
+    connection
+        .pragma_update(None, "foreign_keys", "OFF")
+        .map_err(|err| err.to_string())?;
+    let rebuilt = rebuild_pots(connection);
+    let restored = connection
+        .pragma_update(None, "foreign_keys", "ON")
+        .map_err(|err| err.to_string());
+    rebuilt?;
+    restored
+}
+
+fn pots_allow_paid(connection: &Connection) -> Result<bool, String> {
+    let sql: String = connection
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'pots'",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(|err| err.to_string())?;
+    Ok(sql.contains("'paid'"))
+}
+
+fn rebuild_pots(connection: &mut Connection) -> Result<(), String> {
+    let tx = connection.transaction().map_err(|err| err.to_string())?;
+    tx.execute_batch(
+        "CREATE TABLE pots_new (
+            id TEXT PRIMARY KEY,
+            title TEXT NOT NULL,
+            kind TEXT NOT NULL,
+            target_sats INTEGER NOT NULL,
+            deadline_unix INTEGER NOT NULL,
+            destination TEXT NOT NULL,
+            organizer_pubkey TEXT,
+            status TEXT NOT NULL CHECK (status IN ('open', 'paid')),
+            created_at_unix INTEGER NOT NULL,
+            mint_url TEXT
+        );
+        INSERT INTO pots_new (
+            id, title, kind, target_sats, deadline_unix, destination,
+            organizer_pubkey, status, created_at_unix, mint_url
+        )
+        SELECT
+            id, title, kind, target_sats, deadline_unix, destination,
+            organizer_pubkey, status, created_at_unix, mint_url
+        FROM pots;
+        DROP TABLE pots;
+        ALTER TABLE pots_new RENAME TO pots;",
+    )
+    .map_err(|err| err.to_string())?;
+    tx.commit().map_err(|err| err.to_string())?;
     Ok(())
 }
 
@@ -308,6 +368,21 @@ pub fn update_proof_for_pot(
         .map_err(db_err)?;
     let changed = statement.execute([proof, id, pot_id]).map_err(db_err)?;
 
+    if changed == 1 {
+        Ok(())
+    } else {
+        Err(ApiError::Database)
+    }
+}
+
+/// Moves an open pot to `paid`. A second call changes nothing and returns an error.
+pub fn mark_pot_paid(connection: &Connection, id: &str) -> Result<(), ApiError> {
+    let changed = connection
+        .execute(
+            "UPDATE pots SET status = 'paid' WHERE id = ?1 AND status = 'open'",
+            params![id],
+        )
+        .map_err(db_err)?;
     if changed == 1 {
         Ok(())
     } else {
@@ -561,7 +636,14 @@ mod tests {
             destination: "lno1qq".to_string(),
             organizer_pubkey: None,
         };
-        insert_pot(&connection, "pot-1", &pot, "http://127.0.0.1:9", 1_700_000_000).expect("pot");
+        insert_pot(
+            &connection,
+            "pot-1",
+            &pot,
+            "http://127.0.0.1:9",
+            1_700_000_000,
+        )
+        .expect("pot");
         insert_contributions(
             &mut connection,
             "pot-1",
@@ -602,6 +684,48 @@ mod tests {
             texts,
             vec!["unsigned-one".to_string(), "unsigned-two".to_string()]
         );
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_old_pot_can_become_paid() {
+        let path =
+            std::env::temp_dir().join(format!("vaca-db-paid-{}.sqlite", uuid::Uuid::new_v4()));
+        let connection = Connection::open(&path).expect("open");
+        connection
+            .execute_batch(
+                "CREATE TABLE pots (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    target_sats INTEGER NOT NULL,
+                    deadline_unix INTEGER NOT NULL,
+                    destination TEXT NOT NULL,
+                    organizer_pubkey TEXT,
+                    status TEXT NOT NULL CHECK (status = 'open'),
+                    created_at_unix INTEGER NOT NULL,
+                    mint_url TEXT
+                );
+                INSERT INTO pots (
+                    id, title, kind, target_sats, deadline_unix, destination,
+                    organizer_pubkey, status, created_at_unix, mint_url
+                ) VALUES (
+                    'pot-1', 'Cause', 'cause', 1000, 1800000000, 'lno1qq',
+                    NULL, 'open', 1700000000, 'http://127.0.0.1:9'
+                );",
+            )
+            .expect("old pots");
+        drop(connection);
+        let connection = open(&path).expect("migrate");
+        let before = get_pot(&connection, "pot-1").unwrap().unwrap();
+        assert_eq!(before.status, "open");
+        assert_eq!(before.title, "Cause");
+        assert_eq!(before.mint_url, "http://127.0.0.1:9");
+        mark_pot_paid(&connection, "pot-1").expect("paid");
+        let after = get_pot(&connection, "pot-1").unwrap().unwrap();
+        assert_eq!(after.status, "paid");
+        assert_eq!(after.locked_sats, 0);
+        assert!(mark_pot_paid(&connection, "pot-1").is_err());
         let _ = std::fs::remove_file(&path);
     }
 }

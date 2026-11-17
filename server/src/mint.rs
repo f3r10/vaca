@@ -11,6 +11,8 @@ use crate::http::SimpleCache;
 
 pub(crate) const SIGNED: &str = "The mint did not sign this proof.";
 pub(crate) const SPENDABLE: &str = "The proof is not spendable.";
+pub(crate) const UNPAID: &str = "The mint did not pay this pot.";
+pub(crate) const PENDING: &str = "The mint has not finished this payment.";
 const UNREACHABLE: &str = "The mint could not be reached.";
 
 #[derive(Clone)]
@@ -27,6 +29,8 @@ pub enum ScriptedMint {
     MismatchedAmount,
     BadSignature,
     NotSpendable,
+    /// The fee gate can open, and the melt then refuses. Tests use it.
+    MeltRejected,
 }
 
 #[derive(Clone, Copy)]
@@ -70,6 +74,7 @@ pub async fn check_proofs(
         MintBackend::Scripted(ScriptedMint::NotSpendable) => {
             Err(ApiError::BadRequest(SPENDABLE.to_string()))
         }
+        MintBackend::Scripted(ScriptedMint::MeltRejected) => Ok(()),
         MintBackend::Live => live_check(mint_url, proofs).await,
     }
 }
@@ -82,91 +87,225 @@ pub async fn melt_quote(
     quote_store: SimpleCache,
 ) -> MeltQuoteLookup {
     match backend {
-        MintBackend::Scripted(ScriptedMint::Accept) => MeltQuoteLookup::Quoted(MeltQuote {
-            amount_sats: target_sats,
-            fee_reserve_sats: 1,
-            expiry_unix: u64::MAX,
-        }),
-        MintBackend::Scripted(ScriptedMint::Fee(fee)) => MeltQuoteLookup::Quoted(MeltQuote {
-            amount_sats: target_sats,
-            fee_reserve_sats: *fee,
-            expiry_unix: u64::MAX,
-        }),
-        MintBackend::Scripted(ScriptedMint::MismatchedAmount) => {
-            MeltQuoteLookup::Quoted(MeltQuote {
-                amount_sats: target_sats.saturating_add(1),
-                fee_reserve_sats: 1,
-                expiry_unix: u64::MAX,
-            })
-        }
-        MintBackend::Scripted(ScriptedMint::BadSignature) => MeltQuoteLookup::Quoted(MeltQuote {
-            amount_sats: target_sats,
-            fee_reserve_sats: 1,
-            expiry_unix: u64::MAX,
-        }),
-        MintBackend::Scripted(ScriptedMint::NotSpendable) => MeltQuoteLookup::Quoted(MeltQuote {
-            amount_sats: target_sats,
-            fee_reserve_sats: 1,
-            expiry_unix: u64::MAX,
-        }),
+        MintBackend::Scripted(kind) => MeltQuoteLookup::Quoted(scripted_quote(*kind, target_sats)),
         MintBackend::Live => {
-            let destination_lower = destination.to_lowercase();
-            let is_bolt11 = ["lnbc", "lntb", "lnbcrt"]
-                .iter()
-                .any(|&prefix| destination_lower.starts_with(prefix));
-            let is_bolt12 = ["lno1", "lni1"]
-                .iter()
-                .any(|&prefix| destination_lower.starts_with(prefix));
-            if mint_url.is_empty() || !(is_bolt11 || is_bolt12) {
+            let Some(method) = lightning_method(destination) else {
                 return MeltQuoteLookup::Unavailable;
-            } else {
-                let client = match reqwest::Client::builder()
-                    .timeout(Duration::from_secs(10))
-                    .build()
-                    .map_err(|err| {
-                        tracing::error!(error = %err, "mint client");
-                        ApiError::BadRequest(UNREACHABLE.to_string())
-                    }) {
-                    Ok(client) => client,
-                    Err(_) => return MeltQuoteLookup::Unavailable,
-                };
-                let base = mint_url.trim_end_matches('/');
-                let url = if is_bolt11 {
-                    &format!("{base}/v1/melt/quote/bolt11")
-                } else {
-                    &format!("{base}/v1/melt/quote/bolt12")
-                };
-                let melt_quote_response: MeltQuoteResponse = match post_json(
-                    &client,
-                    url,
-                    &MeltQuoteRequest {
-                        request: destination.to_string(),
-                        unit: "sat".to_string(),
-                    },
-                )
-                .await
-                {
-                    Ok(result) => result,
-                    Err(_) => return MeltQuoteLookup::Unavailable,
-                };
-                match melt_quote_response.state {
-                    cashu::MeltQuoteState::Unpaid => {
-                        let quote = MeltQuote {
-                            amount_sats: melt_quote_response.amount.into(),
-                            fee_reserve_sats: melt_quote_response.fee_reserve.into(),
-                            expiry_unix: melt_quote_response.expiry,
-                        };
-                        quote_store.set((mint_url.to_string(), destination.to_string()), quote);
-                        return MeltQuoteLookup::Quoted(quote);
-                    }
-                    cashu::MeltQuoteState::Paid => return MeltQuoteLookup::Unavailable,
-                    cashu::MeltQuoteState::Pending => return MeltQuoteLookup::Unavailable,
-                    cashu::MeltQuoteState::Unknown => return MeltQuoteLookup::Unavailable,
-                    cashu::MeltQuoteState::Failed => return MeltQuoteLookup::Unavailable,
+            };
+            if mint_url.is_empty() {
+                return MeltQuoteLookup::Unavailable;
+            }
+            let client = match reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .map_err(|err| {
+                    tracing::error!(error = %err, "mint client");
+                    ApiError::BadRequest(UNREACHABLE.to_string())
+                }) {
+                Ok(client) => client,
+                Err(_) => return MeltQuoteLookup::Unavailable,
+            };
+            let base = mint_url.trim_end_matches('/');
+            let url = format!("{base}/v1/melt/quote/{method}");
+            let melt_quote_response: MeltQuoteResponse = match post_json(
+                &client,
+                &url,
+                &MeltQuoteRequest {
+                    request: destination.to_string(),
+                    unit: "sat".to_string(),
+                },
+            )
+            .await
+            {
+                Ok(result) => result,
+                Err(_) => return MeltQuoteLookup::Unavailable,
+            };
+            match melt_quote_response.state {
+                cashu::MeltQuoteState::Unpaid => {
+                    let quote = MeltQuote {
+                        amount_sats: melt_quote_response.amount.into(),
+                        fee_reserve_sats: melt_quote_response.fee_reserve.into(),
+                        expiry_unix: melt_quote_response.expiry,
+                    };
+                    quote_store.set((mint_url.to_string(), destination.to_string()), quote);
+                    return MeltQuoteLookup::Quoted(quote);
                 }
+                cashu::MeltQuoteState::Paid => return MeltQuoteLookup::Unavailable,
+                cashu::MeltQuoteState::Pending => return MeltQuoteLookup::Unavailable,
+                cashu::MeltQuoteState::Unknown => return MeltQuoteLookup::Unavailable,
+                cashu::MeltQuoteState::Failed => return MeltQuoteLookup::Unavailable,
             }
         }
     }
+}
+
+/// The quote the spend used. The fee-gate cache does not keep the mint's quote id.
+#[derive(Debug)]
+pub struct PaidMelt {
+    pub amount_sats: u64,
+    pub fee_reserve_sats: u64,
+}
+
+/// Spends the signed proofs at the pot's mint. `Ok` means the mint reported `Paid`.
+/// This asks for a new quote and does not read the fee-gate cache. No change outputs
+/// are sent, so the mint keeps any unused reserve.
+pub async fn melt_proofs(
+    backend: &MintBackend,
+    mint_url: &str,
+    destination: &str,
+    target_sats: u64,
+    locked_sats: u64,
+    proofs: &[Proof],
+) -> Result<PaidMelt, ApiError> {
+    if proofs.is_empty() {
+        return Err(ApiError::BadRequest(UNPAID.to_string()));
+    }
+    match backend {
+        MintBackend::Scripted(ScriptedMint::MeltRejected) => {
+            Err(ApiError::BadRequest(UNPAID.to_string()))
+        }
+        MintBackend::Scripted(kind) => {
+            let quote = scripted_quote(*kind, target_sats);
+            covered(&quote, target_sats, locked_sats)?;
+            Ok(PaidMelt {
+                amount_sats: quote.amount_sats,
+                fee_reserve_sats: quote.fee_reserve_sats,
+            })
+        }
+        MintBackend::Live => {
+            live_melt(mint_url, destination, target_sats, locked_sats, proofs).await
+        }
+    }
+}
+
+fn scripted_quote(kind: ScriptedMint, target_sats: u64) -> MeltQuote {
+    match kind {
+        ScriptedMint::Accept
+        | ScriptedMint::BadSignature
+        | ScriptedMint::NotSpendable
+        | ScriptedMint::MeltRejected => MeltQuote {
+            amount_sats: target_sats,
+            fee_reserve_sats: 1,
+            expiry_unix: u64::MAX,
+        },
+        ScriptedMint::Fee(fee) => MeltQuote {
+            amount_sats: target_sats,
+            fee_reserve_sats: fee,
+            expiry_unix: u64::MAX,
+        },
+        ScriptedMint::MismatchedAmount => MeltQuote {
+            amount_sats: target_sats.saturating_add(1),
+            fee_reserve_sats: 1,
+            expiry_unix: u64::MAX,
+        },
+    }
+}
+
+fn lightning_method(destination: &str) -> Option<&'static str> {
+    let destination_lower = destination.to_lowercase();
+    if ["lnbc", "lntb", "lnbcrt"]
+        .iter()
+        .any(|prefix| destination_lower.starts_with(prefix))
+    {
+        Some("bolt11")
+    } else if ["lno1", "lni1"]
+        .iter()
+        .any(|prefix| destination_lower.starts_with(prefix))
+    {
+        Some("bolt12")
+    } else {
+        None
+    }
+}
+
+fn covered(quote: &MeltQuote, target_sats: u64, locked_sats: u64) -> Result<(), ApiError> {
+    let Some(needed) = quote.amount_sats.checked_add(quote.fee_reserve_sats) else {
+        return Err(ApiError::BadRequest(UNPAID.to_string()));
+    };
+    if quote.amount_sats == target_sats && locked_sats >= needed {
+        Ok(())
+    } else {
+        Err(ApiError::BadRequest(UNPAID.to_string()))
+    }
+}
+
+fn finished(state: cashu::MeltQuoteState) -> Result<(), ApiError> {
+    match state {
+        cashu::MeltQuoteState::Paid => Ok(()),
+        cashu::MeltQuoteState::Pending => Err(ApiError::BadRequest(PENDING.to_string())),
+        cashu::MeltQuoteState::Unpaid
+        | cashu::MeltQuoteState::Unknown
+        | cashu::MeltQuoteState::Failed => Err(ApiError::BadRequest(UNPAID.to_string())),
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct SpendQuoteResponse {
+    quote: String,
+    amount: cashu::Amount,
+    fee_reserve: cashu::Amount,
+    state: cashu::MeltQuoteState,
+}
+
+#[derive(Debug, Deserialize)]
+struct MeltResponse {
+    state: cashu::MeltQuoteState,
+}
+
+async fn live_melt(
+    mint_url: &str,
+    destination: &str,
+    target_sats: u64,
+    locked_sats: u64,
+    proofs: &[Proof],
+) -> Result<PaidMelt, ApiError> {
+    let Some(method) = lightning_method(destination) else {
+        return Err(ApiError::BadRequest(UNPAID.to_string()));
+    };
+    if mint_url.is_empty() {
+        return Err(ApiError::BadRequest(UNPAID.to_string()));
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .build()
+        .map_err(|err| {
+            tracing::error!(error = %err, "mint client");
+            ApiError::BadRequest(UNPAID.to_string())
+        })?;
+    let base = mint_url.trim_end_matches('/');
+    let quoted: SpendQuoteResponse = post_json(
+        &client,
+        &format!("{base}/v1/melt/quote/{method}"),
+        &MeltQuoteRequest {
+            request: destination.to_string(),
+            unit: "sat".to_string(),
+        },
+    )
+    .await
+    .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+    if quoted.state == cashu::MeltQuoteState::Pending {
+        return Err(ApiError::BadRequest(PENDING.to_string()));
+    }
+    if quoted.state != cashu::MeltQuoteState::Unpaid {
+        return Err(ApiError::BadRequest(UNPAID.to_string()));
+    }
+    let quote = MeltQuote {
+        amount_sats: quoted.amount.into(),
+        fee_reserve_sats: quoted.fee_reserve.into(),
+        expiry_unix: 0,
+    };
+    covered(&quote, target_sats, locked_sats)?;
+    // `MeltRequest::new` drops the DLEQ. cashu 0.18 already writes the P2PK
+    // witness as a string of JSON, which is the shape CDK accepts.
+    let request = cashu::MeltRequest::new(quoted.quote, proofs.to_vec(), None);
+    let paid: MeltResponse = post_json(&client, &format!("{base}/v1/melt/{method}"), &request)
+        .await
+        .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+    finished(paid.state)?;
+    Ok(PaidMelt {
+        amount_sats: quote.amount_sats,
+        fee_reserve_sats: quote.fee_reserve_sats,
+    })
 }
 
 async fn live_check(mint_url: &str, proofs: &[Proof]) -> Result<(), ApiError> {
@@ -311,5 +450,57 @@ mod tests {
         let mint_key = SecretKey::generate();
         let proof = sign_proof("pot-secret", 4);
         assert!(proof.verify_dleq(mint_key.public_key()).is_err());
+    }
+
+    #[tokio::test]
+    async fn a_short_reserve_does_not_melt() {
+        let proof = sign_proof("fee", 4);
+        let err = melt_proofs(
+            &MintBackend::Scripted(ScriptedMint::Fee(20)),
+            "http://127.0.0.1:9",
+            "lno1qq",
+            1_000,
+            1_001,
+            &[proof],
+        )
+        .await
+        .expect_err("fee");
+        assert!(matches!(err, ApiError::BadRequest(message) if message == UNPAID));
+    }
+
+    #[tokio::test]
+    async fn a_covered_scripted_quote_melts() {
+        let proof = sign_proof("ok", 4);
+        let paid = melt_proofs(
+            &MintBackend::Scripted(ScriptedMint::Accept),
+            "http://127.0.0.1:9",
+            "lno1qq",
+            1_000,
+            1_001,
+            &[proof],
+        )
+        .await
+        .expect("paid");
+        assert_eq!(paid.amount_sats, 1_000);
+        assert_eq!(paid.fee_reserve_sats, 1);
+    }
+
+    #[test]
+    fn a_melt_request_names_the_quote_and_sends_no_change() {
+        let mut proof = sign_proof("melt-secret", 4);
+        proof.sign_p2pk(SecretKey::generate()).expect("sign");
+        let request = cashu::MeltRequest::new("quote-1".to_string(), vec![proof], None);
+        let json = serde_json::to_value(&request).expect("json");
+        assert_eq!(json["quote"], "quote-1");
+        assert!(json["outputs"].is_null());
+        assert!(json["inputs"][0]["witness"].is_string());
+        assert!(json["inputs"][0].get("dleq").is_none() || json["inputs"][0]["dleq"].is_null());
+    }
+
+    #[test]
+    fn pending_is_not_paid() {
+        assert!(finished(cashu::MeltQuoteState::Paid).is_ok());
+        let pending = finished(cashu::MeltQuoteState::Pending).expect_err("pending");
+        assert!(matches!(pending, ApiError::BadRequest(message) if message == PENDING));
     }
 }

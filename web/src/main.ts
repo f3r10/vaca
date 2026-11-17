@@ -416,7 +416,7 @@ function potList(pots: Pot[]): HTMLElement {
 
 function labelForRoute(route: "contributions" | "payout" | "refunds"): string {
   if (route === "contributions") return "Contribute (not implemented)";
-  if (route === "payout") return "Pay out (not implemented)";
+  if (route === "payout") return "Pay out";
   return "Refund (not implemented)";
 }
 

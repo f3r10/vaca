@@ -6,6 +6,7 @@ mod lock;
 mod mint;
 mod pot;
 
+use std::sync::atomic::AtomicUsize;
 use std::sync::{Arc, Mutex};
 
 use http::AppState;
@@ -64,6 +65,7 @@ async fn main() {
         db: Arc::new(Mutex::new(connection)),
         mint: mint::MintBackend::Live,
         quote_cache,
+        melt_attempts: Arc::new(AtomicUsize::new(0)),
     };
     let app = http::router(state);
     let listener = match tokio::net::TcpListener::bind(bind).await {

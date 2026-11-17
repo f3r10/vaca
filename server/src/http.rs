@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::PathBuf;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 
 use axum::extract::{Path, State};
@@ -61,6 +62,8 @@ pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub mint: MintBackend,
     pub quote_cache: SimpleCache,
+    /// How many times payout asked the mint to pay. A paid pot does not add to it.
+    pub melt_attempts: Arc<AtomicUsize>,
 }
 
 #[derive(Serialize)]
@@ -266,6 +269,9 @@ async fn post_contribution(
         return Err(reject(&id, "There is no proof."));
     }
     let pot = require_pot(&state, &id)?;
+    if pot.status == "paid" {
+        return Err(reject(&id, "This pot is already paid."));
+    }
     let melt_quote_lookup = match state.quote_cache.get_fresh(
         &(pot.mint_url.clone(), pot.destination.clone()),
         now_unix() as u64,
@@ -433,6 +439,10 @@ async fn payout(
     Path(id): Path<String>,
 ) -> Result<Json<PotView>, ApiError> {
     let pot = require_pot(&state, &id)?;
+    if pot.status == "paid" {
+        let (view, _) = pot.view(&mint::MeltQuoteLookup::Unavailable);
+        return Ok(Json(view));
+    }
     let melt_quote_lookup = match state.quote_cache.get_fresh(
         &(pot.mint_url.clone(), pot.destination.clone()),
         now_unix() as u64,
@@ -521,7 +531,27 @@ async fn payout(
     with_db_mut(&state, |connection| {
         db::update_proofs_for_pot(connection, &pot.id, &signed)
     })?;
-    Ok(Json(preview))
+    // The signatures are committed before the mint is asked. A failed payment
+    // leaves them in place so a later payout can try again without signing twice.
+    let parsed_proofs: Vec<cashu::Proof> = proofs.into_iter().map(|(_, parsed)| parsed).collect();
+    state.melt_attempts.fetch_add(1, Ordering::SeqCst);
+    let paid = mint::melt_proofs(
+        &state.mint,
+        &pot.mint_url,
+        &pot.destination,
+        pot.target_sats,
+        pot.locked_sats,
+        &parsed_proofs,
+    )
+    .await?;
+    with_db(&state, |connection| db::mark_pot_paid(connection, &pot.id))?;
+    let stored = require_pot(&state, &id)?;
+    let (view, _) = stored.view(&mint::MeltQuoteLookup::Quoted(mint::MeltQuote {
+        amount_sats: paid.amount_sats,
+        fee_reserve_sats: paid.fee_reserve_sats,
+        expiry_unix: u64::MAX,
+    }));
+    Ok(Json(view))
 }
 
 async fn refunds_unimplemented(
@@ -625,6 +655,7 @@ mod tests {
             db: Arc::new(Mutex::new(connection)),
             mint,
             quote_cache,
+            melt_attempts: Arc::new(AtomicUsize::new(0)),
         };
         (router(state), path)
     }
@@ -634,7 +665,7 @@ mod tests {
         key_path: PathBuf,
         mint: MintBackend,
         mint_url: String,
-    ) -> (Router, std::path::PathBuf) {
+    ) -> (Router, std::path::PathBuf, Arc<AtomicUsize>) {
         let path = std::env::temp_dir().join(format!("vaca-http-{}.sqlite", uuid::Uuid::new_v4()));
         let config = Config {
             bind: "127.0.0.1:9".parse().unwrap(),
@@ -648,13 +679,15 @@ mod tests {
             server_pubkey: Some(server_pubkey),
         };
         let connection = db::open(&path).expect("db");
+        let melt_attempts = Arc::new(AtomicUsize::new(0));
         let state = AppState {
             config: Arc::new(config),
             db: Arc::new(Mutex::new(connection)),
             mint,
             quote_cache: SimpleCache::new(),
+            melt_attempts: melt_attempts.clone(),
         };
-        (router(state), path)
+        (router(state), path, melt_attempts)
     }
 
     async fn json_body(response: axum::response::Response) -> serde_json::Value {
@@ -1152,7 +1185,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let (app, path) = open_app_with_server_key(
+        let (app, path, melts) = open_app_with_server_key(
             server.clone(),
             key_path.clone(),
             MintBackend::Scripted(crate::mint::ScriptedMint::Accept),
@@ -1185,11 +1218,16 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = json_body(response).await;
-        assert_eq!(body["status"], "open");
-        assert_eq!(body["payout_allowed"], true);
+        assert_eq!(body["status"], "paid");
+        assert_eq!(body["payout_allowed"], false);
+        assert_eq!(body["fee_reserve_sats"], 1);
         assert!(body.get("signatures").is_none());
         assert!(body.get("secret").is_none());
         assert_eq!(signature_count(&path, &id), 1);
+        assert_eq!(melts.load(Ordering::SeqCst), 1);
+        let stored = fetch_pot(&app, &id).await;
+        assert_eq!(stored["status"], "paid");
+        assert_eq!(stored["payout_allowed"], false);
 
         let again = app
             .clone()
@@ -1200,7 +1238,29 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(again.status(), StatusCode::OK);
+        let again_body = json_body(again).await;
+        assert_eq!(again_body["status"], "paid");
+        assert_eq!(again_body["payout_allowed"], false);
         assert_eq!(signature_count(&path, &id), 1);
+        assert_eq!(melts.load(Ordering::SeqCst), 1);
+
+        let extra_secret = v1_secret_nonce(&server, &refund, locktime, "after-paid");
+        let extra = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/contributions"),
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "proofs": [signed_proof(&extra_secret, 1)],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(extra.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(extra).await["message"],
+            "This pot is already paid."
+        );
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&key_path);
     }
@@ -1222,7 +1282,7 @@ mod tests {
             use std::os::unix::fs::PermissionsExt;
             std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
         }
-        let (app, path) = open_app_with_server_key(
+        let (app, path, _melts) = open_app_with_server_key(
             server.clone(),
             key_path.clone(),
             MintBackend::Scripted(crate::mint::ScriptedMint::Accept),
@@ -1269,6 +1329,80 @@ mod tests {
             "The deadline has passed."
         );
         assert_eq!(signature_count_without_verifying(&path, &id), 0);
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&key_path);
+    }
+
+    #[tokio::test]
+    async fn payout_stays_open_when_the_mint_does_not_pay() {
+        let key = SecretKey::generate();
+        let server = key.public_key().to_string();
+        let refund = compressed("03", "22");
+        let key_path =
+            std::env::temp_dir().join(format!("vaca-server-key-{}.txt", uuid::Uuid::new_v4()));
+        std::fs::write(
+            &key_path,
+            format!("pubkey {server}\nprivkey {}\n", key.to_secret_hex()),
+        )
+        .unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&key_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        }
+        let (app, path, melts) = open_app_with_server_key(
+            server.clone(),
+            key_path.clone(),
+            MintBackend::Scripted(crate::mint::ScriptedMint::MeltRejected),
+            "http://127.0.0.1:9".to_string(),
+        );
+        let created = create_cause(&app, 1_000).await;
+        let id = created["id"].as_str().unwrap().to_string();
+        let locktime = created["locktime_unix"].as_i64().unwrap();
+        let secret = v1_secret_nonce(&server, &refund, locktime, "reject-1001");
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/contributions"),
+                serde_json::json!({
+                    "refund_pubkey": refund,
+                    "proofs": [signed_proof(&secret, 1001)],
+                }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/payout"),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(response).await["message"],
+            "The mint did not pay this pot."
+        );
+        assert_eq!(signature_count(&path, &id), 1);
+        assert_eq!(melts.load(Ordering::SeqCst), 1);
+        let stored = fetch_pot(&app, &id).await;
+        assert_eq!(stored["status"], "open");
+        assert_eq!(stored["payout_allowed"], true);
+
+        let again = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/payout"),
+                serde_json::json!({}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(again.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(signature_count(&path, &id), 1);
+        assert_eq!(melts.load(Ordering::SeqCst), 2);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&key_path);
     }
@@ -1523,7 +1657,9 @@ mod tests {
                 crate::mint::ScriptedMint::NotSpendable => crate::mint::SPENDABLE,
                 crate::mint::ScriptedMint::Fee(_) => unreachable!(),
                 crate::mint::ScriptedMint::MismatchedAmount => unreachable!(),
-                crate::mint::ScriptedMint::Accept => unreachable!(),
+                crate::mint::ScriptedMint::Accept | crate::mint::ScriptedMint::MeltRejected => {
+                    unreachable!()
+                }
             };
             assert_eq!(message, expected);
             assert!(!message.contains(&secret));

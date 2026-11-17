@@ -49,7 +49,7 @@ pub struct PotView {
     pub locked_sats: u64,
     /// Display only. This is not a NUT-11 secret.
     pub locktime_unix: i64,
-    /// The server stops co-signing here. Co-signing is not implemented.
+    /// The server stops co-signing here, which is the advertised deadline.
     pub co_sign_until_unix: i64,
     pub grace_seconds: u64,
     pub fee_reserve_recipient: &'static str,
@@ -128,6 +128,9 @@ impl StoredPot {
                 sats_still_needed = self.target_sats.saturating_sub(self.locked_sats);
             }
         }
+        // A paid pot has already spent its proofs. The fee numbers can still
+        // describe the quote, but the route must not offer another payout.
+        let payout_allowed = self.status == "open" && payout_allowed;
         (
             PotView {
                 id: self.id.clone(),

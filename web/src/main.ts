@@ -1,9 +1,11 @@
+import type { Proof } from "@cashu/cashu-ts";
 import {
   RequestError,
   createPot,
   getHealth,
   getPot,
   listPots,
+  postContribution,
   postRefund,
   postUnimplemented,
   type Health,
@@ -13,6 +15,21 @@ import { createSecret, secretMatchesPot } from "./lock";
 import { CASHU_TS_COMMIT, CASHU_TS_VERSION, CDK_GIT_REV } from "./pins";
 import { generateRefundKey, privkeyFromRefundFile, pubkeyFromRefundFile, refundKeyFile, refundKeyMatches } from "./refund-key";
 import { RefundSwapError, readRefundProofs, refundSats, refundToken, swapRefundProofs } from "./refund-swap";
+import {
+  ContributeError,
+  assertPotCanTakeProofs,
+  classifyProofs,
+  contributionAmount,
+  contributionProofs,
+  lockForPot,
+  proofSats,
+  proofsToken,
+  readTokenProofs,
+  sameMint,
+  takeLockedProofs,
+  type ContributionProof,
+  type PotLock,
+} from "./contribute";
 
 let refundPubkey: string | null = null;
 
@@ -52,7 +69,7 @@ function banner(): HTMLElement {
   const el = document.createElement("p");
   el.className = "banner";
   el.textContent =
-    "Experimental. Regtest or Mutinynet only. This page can create a refund key and, after the lock time, swap that contributor's proofs into a token file. It does not create the server key or pay the pot.";
+    "Experimental. Regtest or Mutinynet only. This page can create a refund key, lock a token into an open pot, and, after the lock time, swap that contributor's proofs into a token file. It does not create the server key or pay the pot.";
   return el;
 }
 
@@ -68,7 +85,7 @@ function trust(): HTMLElement {
       "v1, the first working version: the server key is the only pot key. The server can spend the locked ecash by itself. That is custodial for theft. If the server disappears, a contributor who still has the refund key can take their own sats back after the lock time, because the mint checks that key.",
     ),
     paragraph(
-      "After the lock time, both the pot key and the refund key can spend. The mint settles whichever valid spend it sees first. Take the refund as soon as the lock expires. Refund swaps those proofs at the mint and downloads a token file. The private key stays in the refund file.",
+      "Contribute reads a token and the refund file, locks proofs to the server key and that refund key, and posts them. The private key stays in the file. Sats above the amount still needed come back as another token. After the lock time, both the pot key and the refund key can spend. The mint settles whichever valid spend it sees first. Take the refund as soon as the lock expires. Refund swaps those proofs at the mint and downloads a token file.",
     ),
     paragraph(
       "The mint is trusted, as with any Cashu mint. Losing the refund key loses the refund. A lock with no refund key would let anyone spend after the deadline. A malformed lock cannot be spent.",
@@ -142,7 +159,7 @@ function healthCard(health: Health): HTMLElement {
     line("Server key file present", health.server_key_file_present ? "yes" : "no"),
     line("Server pubkey set", health.server_pubkey_set ? "yes" : "no"),
     line("CDK linked into this binary", health.cdk_linked ? "yes" : "no"),
-    paragraph(`CDK pin ${health.cdk_rev}. cashu-ts ${health.cashu_ts} (${health.cashu_ts_commit}). The page does not call cashu-ts.`),
+    paragraph(`CDK pin ${health.cdk_rev}. cashu-ts ${health.cashu_ts} (${health.cashu_ts_commit}). The page uses cashu-ts in the browser.`),
   );
   return card;
 }
@@ -282,10 +299,17 @@ async function renderPot(id: string): Promise<void> {
   root.append(back, trust());
   try {
     const pot = await getPot(id);
-    root.append(potCard(pot), moneyActions(pot));
+    let card = potCard(pot);
     const pubkey = field("compresed pubkey", "text", "pubkey");
+    root.append(
+      card,
+      moneyActions(pot, pubkey, (next) => {
+        const replacement = potCard(next);
+        card.replaceWith(replacement);
+        card = replacement;
+      }),
+    );
     const pubkeySection = document.createElement("section");
-    pubkeySection.append(pubkey)
     const button = document.createElement("button");
     button.type = "button";
     button.className = "secondary";
@@ -352,7 +376,8 @@ function potCard(pot: Pot): HTMLElement {
   return card;
 }
 
-function moneyActions(pot: Pot): HTMLElement {
+function moneyActions(initial: Pot, serverKeyField: HTMLLabelElement, showPot: (next: Pot) => void): HTMLElement {
+  let pot = initial;
   const box = document.createElement("section");
   box.className = "card";
   const result = document.createElement("p");
@@ -360,79 +385,194 @@ function moneyActions(pot: Pot): HTMLElement {
   box.append(
     heading("Money"),
     paragraph(
-      "Contribute sends an empty body. Pay out asks the server to melt. Refund reads a key file in the browser and sends only the public key. After the lock time the page signs with the refund key and swaps the proofs at the mint. The fresh proofs download as a token file.",
+      "Contribute reads a token and the refund key file. It locks up to the amount still needed and posts those proofs. The private key stays in the file. Pay out asks the server to melt. After the lock time, Refund signs with the refund key and swaps the proofs at the mint. The fresh proofs download as a token file.",
     ),
   );
-  const file = document.createElement("input");
-  file.type = "file";
-  file.accept = ".txt,text/plain";
+  const tokenInput = document.createElement("input");
+  tokenInput.type = "file";
+  tokenInput.accept = ".cashu,.json,text/plain";
+  const keyInput = document.createElement("input");
+  keyInput.type = "file";
+  keyInput.accept = ".txt,text/plain";
   let busy = false;
+  let pending: { refundPubkey: string; proofs: ContributionProof[] } | null = null;
   let reclaimed: { filename: string; contents: string } | null = null;
-  const save = document.createElement("button");
-  save.type = "button";
-  save.className = "secondary";
-  save.textContent = "Download token";
-  save.hidden = true;
-  save.addEventListener("click", () => {
-    if (!reclaimed) return;
-    downloadText(reclaimed.filename, reclaimed.contents);
-  });
-  for (const route of ["contributions", "payout"] as const) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "secondary";
-    button.textContent = labelForRoute(route);
-    button.addEventListener("click", () => {
-      void (async () => {
-        result.textContent = "";
-        try {
-          await postUnimplemented(pot.id, route);
-          result.textContent = "The server accepted a money route. That is a bug in this skeleton.";
-        } catch (err) {
-          result.textContent = errorText(err);
-        }
-      })();
-    });
-    box.append(button);
-  }
+  let keepFile: { filename: string; contents: string } | null = null;
+  let lockedFile: { filename: string; contents: string } | null = null;
+
+  const contribute = document.createElement("button");
+  contribute.type = "button";
+  contribute.className = "secondary";
+  contribute.textContent = "Contribute";
+  const payout = document.createElement("button");
+  payout.type = "button";
+  payout.className = "secondary";
+  payout.textContent = "Pay out";
   const refund = document.createElement("button");
   refund.type = "button";
   refund.className = "secondary";
   refund.textContent = "Refund";
+  const postAgain = document.createElement("button");
+  postAgain.type = "button";
+  postAgain.className = "secondary";
+  postAgain.textContent = "Post locked proofs";
+  postAgain.hidden = true;
+  const saveKeep = downloadButton("Download remainder", () => keepFile);
+  const saveLocked = downloadButton("Download locked proofs", () => lockedFile);
+  const save = downloadButton("Download token", () => reclaimed);
+
+  function setDisabled(on: boolean): void {
+    busy = on;
+    contribute.disabled = on || pending !== null;
+    payout.disabled = on;
+    refund.disabled = on;
+    postAgain.disabled = on;
+  }
+
+  payout.addEventListener("click", () => {
+    void (async () => {
+      if (busy) return;
+      result.textContent = "";
+      try {
+        await postUnimplemented(pot.id, "payout");
+        result.textContent = "The server accepted a money route. That is a bug in this skeleton.";
+      } catch (err) {
+        result.textContent = errorText(err);
+      }
+    })();
+  });
+
+  contribute.addEventListener("click", () => {
+    void (async () => {
+      if (busy || pending) return;
+      setDisabled(true);
+      result.textContent = "";
+      let swapped: { send: Proof[]; keep: Proof[] } | null = null;
+      const mintUrl = pot.mint_url;
+      try {
+        const key = await refundKeyFrom(keyInput.files?.[0]);
+        if ("error" in key) {
+          result.textContent = key.error;
+          return;
+        }
+        const serverPubkey = valueOf(serverKeyField).trim().toLowerCase();
+        if (serverPubkey === "") {
+          result.textContent = "Enter the server public key first.";
+          return;
+        }
+        if (!/^(02|03)[0-9a-f]{64}$/.test(serverPubkey)) {
+          result.textContent = "The server key is not a compressed public key.";
+          return;
+        }
+        assertPotCanTakeProofs(pot, Math.floor(Date.now() / 1000));
+        const chosen = tokenInput.files?.[0];
+        if (!chosen) {
+          result.textContent = "Choose the token file first.";
+          return;
+        }
+        const token = await readTokenProofs(mintUrl, await chosen.text());
+        if (token.unit !== null && token.unit !== "sat") {
+          result.textContent = "The token is not in sats.";
+          return;
+        }
+        if (!sameMint(token.mint, mintUrl)) {
+          result.textContent = "That token is from a different mint.";
+          return;
+        }
+        const lock: PotLock = {
+          serverPubkey,
+          refundPubkey: key.pubkey,
+          locktimeUnix: pot.locktime_unix,
+        };
+        const kind = classifyProofs(token.proofs, lock);
+        if (kind === "other-lock") {
+          result.textContent = "Those proofs are locked to a different key.";
+          return;
+        }
+        if (kind === "mixed") {
+          result.textContent = "The token mixes locked and unlocked proofs.";
+          return;
+        }
+        let posting: ContributionProof[];
+        if (kind === "this-pot") {
+          if (proofSats(token.proofs) > pot.sats_still_needed) {
+            result.textContent = "That amount passes the target plus the fee reserve.";
+            return;
+          }
+          posting = contributionProofs(token.proofs);
+        } else {
+          const amount = contributionAmount(proofSats(token.proofs), pot.sats_still_needed);
+          swapped = await lockForPot(mintUrl, token.proofs, amount, lock);
+          posting = takeLockedProofs(swapped.send, lock, amount);
+        }
+        try {
+          pot = await postContribution(pot.id, key.pubkey, posting);
+        } catch (err) {
+          remember(mintUrl, key.pubkey, posting, swapped?.send ?? [], swapped?.keep ?? []);
+          throw err;
+        }
+        showPot(pot);
+        const counted = posting.reduce((sum, proof) => sum + proof.amount, 0);
+        if (swapped && swapped.keep.length > 0) {
+          keepFile = proofsToken(mintUrl, swapped.keep, "vaca-keep.cashu");
+          saveKeep.hidden = false;
+          downloadText(keepFile.filename, keepFile.contents);
+          result.textContent = `Locked ${counted} sats. The pot has counted them. The rest of the token downloaded as a file.`;
+        } else {
+          result.textContent = `Locked ${counted} sats. The pot has counted them.`;
+        }
+      } catch (err) {
+        if (swapped && pending === null) {
+          remember(mintUrl, "", null, swapped.send, swapped.keep);
+        }
+        const message = contributeErrorText(err);
+        result.textContent = pending ? `${message} Post the locked proofs again without another swap.` : message;
+      } finally {
+        setDisabled(false);
+      }
+    })();
+  });
+
+  postAgain.addEventListener("click", () => {
+    void (async () => {
+      if (busy || !pending) return;
+      setDisabled(true);
+      result.textContent = "";
+      const posting = pending.proofs;
+      const refundPubkey = pending.refundPubkey;
+      try {
+        pot = await postContribution(pot.id, refundPubkey, posting);
+        showPot(pot);
+        pending = null;
+        postAgain.hidden = true;
+        const counted = posting.reduce((sum, proof) => sum + proof.amount, 0);
+        result.textContent = `Locked ${counted} sats. The pot has counted them.`;
+      } catch (err) {
+        result.textContent = contributeErrorText(err);
+      } finally {
+        setDisabled(false);
+      }
+    })();
+  });
+
   refund.addEventListener("click", () => {
     void (async () => {
       if (busy) return;
-      busy = true;
-      refund.disabled = true;
+      setDisabled(true);
       result.textContent = "";
       try {
-        const chosen = file.files?.[0];
-        if (!chosen) {
-          result.textContent = "Choose the refund key file first.";
-          return;
-        }
-        const contents = await chosen.text();
-        const pubkey = pubkeyFromRefundFile(contents);
-        const privkey = privkeyFromRefundFile(contents);
-        if (pubkey === null) {
-          result.textContent = "The file has no public key line.";
-          return;
-        }
-        if (privkey === null) {
-          result.textContent = "The file has no private key line.";
-          return;
-        }
-        if (!refundKeyMatches(pubkey, privkey)) {
-          result.textContent = "The private key does not match the public key in that file.";
+        const key = await refundKeyFrom(keyInput.files?.[0]);
+        if ("error" in key) {
+          result.textContent = key.error;
           return;
         }
         if (pot.mint_url === "") {
           result.textContent = "Mint URL is not set.";
           return;
         }
-        const body = await postRefund(pot.id, pubkey);
+        const body = await postRefund(pot.id, key.pubkey);
         const locked = readRefundProofs(body.proofs);
-        const fresh = await swapRefundProofs(pot.mint_url, locked, privkey);
+        const fresh = await swapRefundProofs(pot.mint_url, locked, key.privkey);
         reclaimed = refundToken(pot.mint_url, fresh);
         save.hidden = false;
         result.textContent = `Reclaimed ${refundSats(fresh)} sats. Download the token file if the browser did not. The mint has taken the locked proofs.`;
@@ -440,13 +580,91 @@ function moneyActions(pot: Pot): HTMLElement {
       } catch (err) {
         result.textContent = err instanceof RefundSwapError ? err.message : errorText(err);
       } finally {
-        busy = false;
-        refund.disabled = false;
+        setDisabled(false);
       }
     })();
   });
-  box.append(file, refund, save, result);
+
+  function remember(
+    mintUrl: string,
+    refundPubkey: string,
+    proofs: ContributionProof[] | null,
+    send: Proof[],
+    keep: Proof[],
+  ): void {
+    if (keep.length > 0) {
+      keepFile = proofsToken(mintUrl, keep, "vaca-keep.cashu");
+      saveKeep.hidden = false;
+      downloadText(keepFile.filename, keepFile.contents);
+    }
+    if (send.length > 0) {
+      lockedFile = proofsToken(mintUrl, send, "vaca-locked.cashu");
+      saveLocked.hidden = false;
+      downloadText(lockedFile.filename, lockedFile.contents);
+    }
+    if (proofs !== null && refundPubkey !== "") {
+      pending = { refundPubkey, proofs };
+      postAgain.hidden = false;
+    }
+  }
+
+  box.append(
+    serverKeyField,
+    fileLabel("Token", tokenInput),
+    fileLabel("Refund key", keyInput),
+    contribute,
+    payout,
+    refund,
+    postAgain,
+    saveLocked,
+    saveKeep,
+    save,
+    result,
+  );
   return box;
+}
+
+function downloadButton(
+  text: string,
+  file: () => { filename: string; contents: string } | null,
+): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "secondary";
+  button.textContent = text;
+  button.hidden = true;
+  button.addEventListener("click", () => {
+    const chosen = file();
+    if (!chosen) return;
+    downloadText(chosen.filename, chosen.contents);
+  });
+  return button;
+}
+
+function fileLabel(text: string, input: HTMLInputElement): HTMLLabelElement {
+  const label = document.createElement("label");
+  label.append(document.createTextNode(text), input);
+  return label;
+}
+
+async function refundKeyFrom(
+  chosen: File | undefined,
+): Promise<{ pubkey: string; privkey: string } | { error: string }> {
+  if (!chosen) return { error: "Choose the refund key file first." };
+  const contents = await chosen.text();
+  const pubkey = pubkeyFromRefundFile(contents);
+  const privkey = privkeyFromRefundFile(contents);
+  if (pubkey === null) return { error: "The file has no public key line." };
+  if (privkey === null) return { error: "The file has no private key line." };
+  if (!refundKeyMatches(pubkey, privkey)) {
+    return { error: "The private key does not match the public key in that file." };
+  }
+  return { pubkey, privkey };
+}
+
+function contributeErrorText(err: unknown): string {
+  if (err instanceof ContributeError) return err.message;
+  return errorText(err);
 }
 
 function downloadText(filename: string, contents: string): void {
@@ -482,11 +700,6 @@ function potList(pots: Pot[]): HTMLElement {
     list.append(item);
   }
   return list;
-}
-
-function labelForRoute(route: "contributions" | "payout"): string {
-  if (route === "contributions") return "Contribute (not implemented)";
-  return "Pay out";
 }
 
 function kindLabel(kind: string): string {

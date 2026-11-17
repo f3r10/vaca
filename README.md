@@ -2,7 +2,7 @@
 
 Vaca is an experimental web app for all-or-nothing pots: a cause, a shared purchase, or splitting a bill. Contributors lock ecash toward a target before a deadline. If the target is met, the pot pays a Lightning destination that was committed when the pot was created. If the deadline passes first, each contributor reclaims their own sats, because the mint enforces a NUT-11 refund key. There is no smart contract.
 
-This repository stores pots. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. When the locked total covers the target plus the mint's fee reserve, and the advertised deadline has not passed, `POST /api/pots/{id}/payout` signs each stored proof and asks the mint to pay the destination. The pot becomes `paid` only when the mint says the payment is paid. A mint failure leaves the pot open. Unused fee reserve comes back as NUT-08 change and is stored for the organizer. A download of those proofs is later. After the mint lock time, `POST /api/pots/{id}/refunds` returns that contributor's proofs with no server signature. The page signs with the refund key and swaps them at the mint. The server does not spend them.
+This repository stores pots. The page locks a token to the pot and posts the proofs. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. When the locked total covers the target plus the mint's fee reserve, and the advertised deadline has not passed, `POST /api/pots/{id}/payout` signs each stored proof and asks the mint to pay the destination. The pot becomes `paid` only when the mint says the payment is paid. A mint failure leaves the pot open. Unused fee reserve comes back as NUT-08 change and is stored for the organizer. A download of those proofs is later. After the mint lock time, `POST /api/pots/{id}/refunds` returns that contributor's proofs with no server signature. The page signs with the refund key and swaps them at the mint. The server does not spend them.
 
 Regtest or Mutinynet only. The hard cap is 100,000 sats per pot.
 
@@ -16,7 +16,7 @@ Vaca does not implement NUT-11. The mint does: `cdk-mintd` advertises NUT-11 and
 - `locktime`: the advertised deadline plus 600 seconds.
 - `refund`: the contributor's public key. The page's "Create refund key" button generates the key pair in the browser and downloads it as a file. The private key never goes to the server.
 
-`createSecret` in `web/src/lock.ts` builds the secret with cashu-ts `createP2PKsecret`, parses it back, and checks each field. The contributor's wallet swaps ordinary proofs into proofs that carry this lock, so the mint signs locked proofs. On regtest that swap is `web/src/mint-pod-check.ts`, which calls cashu-ts `wallet.send` with lock options (`mainKeys`, `refundKeys`, `locktime`) rather than `createSecret`. The page does not do the swap yet.
+`createSecret` in `web/src/lock.ts` builds one secret with cashu-ts `createP2PKsecret`, parses it back, and checks each field. The page does not post that string. It asks the mint to swap the token, and the mint signs new proofs whose secrets carry the same lock. `lockForPot` in `web/src/contribute.ts` calls `wallet.ops.send` with `mainKeys`, `refundKeys`, and `locktime` only. A v3 keyset would encode a different secret, so the page refuses that keyset before the swap. `web/src/mint-pod-check.ts` is the same swap as a node script.
 
 **The check before counting.** The mint does not know what a pot is. It only checks keys and time. So `secret_matches_pot` in `server/src/lock.rs` accepts a proof only when the kind is P2PK, `data` is the pot key, and there are exactly two tags: the pot's locktime and one refund key. 02 and 03 keys with the same x-coordinate count as the same key. The contributions route then asks the mint that the proof is signed and unspent before it adds the amount. Signed is a NUT-12 DLEQ check, `verify_dleq` in `server/src/mint.rs`, against the key for that amount on the active sat keyset. Unspent is NUT-07, `POST /v1/checkstate`. The refund route runs those two checks before it returns proofs.
 
@@ -197,7 +197,7 @@ Done when a new visitor can create a refund key, open a pot, and build a lock wi
 
 ## Not in this skeleton
 
-Posting the swapped regtest proofs is a later step. v2 co-signing comes later. The refund route returns proofs after the lock time. The page swaps them and downloads a token. The server does not spend them. NUT-08 change is stored on payout. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
+v2 co-signing comes later. The refund route returns proofs after the lock time. The page swaps them and downloads a token. The server does not spend them. NUT-08 change is stored on payout. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
 
 Local git only. No remote.
 

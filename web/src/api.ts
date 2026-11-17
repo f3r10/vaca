@@ -125,7 +125,25 @@ export function postRefund(id: string, refundPubkey: string): Promise<{ proofs: 
   });
 }
 
-export function postUnimplemented(id: string, route: "contributions" | "payout"): Promise<never> {
+export function postContribution(
+  id: string,
+  refundPubkey: string,
+  proofs: Array<{
+    amount: number;
+    id: string;
+    secret: string;
+    C: string;
+    dleq: { e: string; s: string; r: string };
+  }>,
+): Promise<Pot> {
+  return request<Pot>(`/api/pots/${encodeURIComponent(id)}/contributions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ refund_pubkey: refundPubkey, proofs }),
+  });
+}
+
+export function postUnimplemented(id: string, route: "payout"): Promise<never> {
   return request<never>(`/api/pots/${encodeURIComponent(id)}/${route}`, {
     method: "POST",
     headers: { "content-type": "application/json" },

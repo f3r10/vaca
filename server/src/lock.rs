@@ -48,6 +48,28 @@ pub(crate) fn secret_matches_pot(
     pubkey_x(&refund).as_deref() == Some(refund_x.as_str())
 }
 
+/// The refund tag matches this key. `02` and `03` with the same x-coordinate match.
+/// This does not require the server key, so a refund can be prepared when that key is gone.
+pub(crate) fn secret_refund_matches(secret: &str, refund_pubkey: &str) -> bool {
+    let Some(wanted) = pubkey_x(refund_pubkey) else {
+        return false;
+    };
+    let Ok((kind, body)) = serde_json::from_str::<(String, SecretBody)>(secret) else {
+        return false;
+    };
+    if kind != "P2PK" {
+        return false;
+    }
+    let Some(refund) = single_tag(&body.tags, "refund") else {
+        return false;
+    };
+    pubkey_x(&refund).as_deref() == Some(wanted.as_str())
+}
+
+pub(crate) fn refund_pubkey_ok(pubkey: &str) -> bool {
+    pubkey_x(pubkey).is_some()
+}
+
 pub(crate) fn contribution_lock_ok(
     server_pubkey: Option<&str>,
     pot_locktime_unix: i64,
@@ -122,6 +144,10 @@ mod tests {
             &[tag("locktime", "1800000000"), tag("refund", &refund)],
         );
         assert!(secret_matches_pot(&server, &refund, LOCKTIME, &secret));
+        assert!(secret_refund_matches(&secret, &refund));
+        let flipped = format!("02{}", "22".repeat(32));
+        assert!(secret_refund_matches(&secret, &flipped));
+        assert!(!secret_refund_matches(&secret, &key("03", "44")));
 
         let flipped = p2pk(
             &key("03", "11"),

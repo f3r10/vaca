@@ -7,7 +7,6 @@ use serde::Serialize;
 pub enum ApiError {
     BadRequest(String),
     NotFound,
-    NotImplemented(&'static str),
     Database,
 }
 
@@ -41,15 +40,6 @@ impl IntoResponse for ApiError {
                     message: Some("No pot with that id.".to_string()),
                     route: None,
                     owner: None,
-                },
-            ),
-            ApiError::NotImplemented(route) => (
-                StatusCode::NOT_IMPLEMENTED,
-                ErrorBody {
-                    error: "not_implemented",
-                    message: Some("Refunds are not implemented.".to_string()),
-                    route: Some(*route),
-                    owner: Some("Y"),
                 },
             ),
             ApiError::Database => (

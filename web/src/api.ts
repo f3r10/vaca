@@ -117,7 +117,15 @@ export function createPot(input: CreatePotInput): Promise<Pot> {
   });
 }
 
-export function postUnimplemented(id: string, route: "contributions" | "payout" | "refunds"): Promise<never> {
+export function postRefund(id: string, refundPubkey: string): Promise<{ proofs: unknown[] }> {
+  return request<{ proofs: unknown[] }>(`/api/pots/${encodeURIComponent(id)}/refunds`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ refund_pubkey: refundPubkey }),
+  });
+}
+
+export function postUnimplemented(id: string, route: "contributions" | "payout"): Promise<never> {
   return request<never>(`/api/pots/${encodeURIComponent(id)}/${route}`, {
     method: "POST",
     headers: { "content-type": "application/json" },

@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 license = "MIT"
 publish = false
-description = "HTTP API for Vaca pots. Signs a funded pot and melts it when the mint pays. Stores NUT-08 change for the organizer. Does not refund."
+description = "HTTP API for Vaca pots. Signs a funded pot and melts it when the mint pays. Stores NUT-08 change for the organizer. Returns a contributor's proofs after the lock time and does not spend them."
 
 [dependencies]
 axum = "0.8"

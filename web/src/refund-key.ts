@@ -23,3 +23,14 @@ export function generateRefundKey(): RefundKey {
 export function refundKeyFile(key: RefundKey): string {
 	return `pubkey ${key.pubkey}\nprivkey ${key.privkey}`;
 }
+
+// The public key line only. The private key stays in the file the browser read.
+export function pubkeyFromRefundFile(contents: string): string | null {
+	for (const line of contents.split("\n")) {
+		const parts = line.trim().split(/\s+/)
+		if (parts.length >= 2 && parts[0] === "pubkey") {
+			return parts[1].toLowerCase()
+		}
+	}
+	return null
+}

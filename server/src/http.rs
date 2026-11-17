@@ -80,7 +80,7 @@ struct Health {
     server_key_file_present: bool,
     /// The public key from the environment. The key file is not read.
     server_pubkey_set: bool,
-    /// A checked proof is stored. Refunds are not implemented.
+    /// A checked proof is stored. A refund returns that contributor's proofs after the lock time.
     counts_contributions: bool,
     cdk_rev: &'static str,
     cdk_linked: bool,
@@ -109,7 +109,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/pots/{id}", get(get_pot))
         .route("/api/pots/{id}/contributions", post(post_contribution))
         .route("/api/pots/{id}/payout", post(payout))
-        .route("/api/pots/{id}/refunds", post(refunds_unimplemented))
+        .route("/api/pots/{id}/refunds", post(post_refund))
         .fallback(not_found)
         .layer(cors)
         .with_state(state)
@@ -566,16 +566,66 @@ async fn payout(
     Ok(Json(view))
 }
 
-async fn refunds_unimplemented(
-    State(state): State<AppState>,
-    Path(id): Path<String>,
-) -> Result<(), ApiError> {
-    refuse_money_route(&state, &id, "refunds")
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RefundBody {
+    refund_pubkey: String,
 }
 
-fn refuse_money_route(state: &AppState, id: &str, route: &'static str) -> Result<(), ApiError> {
-    require_pot(state, id)?;
-    Err(ApiError::NotImplemented(route))
+#[derive(Serialize)]
+struct RefundResponse {
+    proofs: Vec<serde_json::Value>,
+}
+
+/// Returns the contributor's proofs after the mint lock time.
+/// The server does not sign them and does not spend them. A witness already
+/// stored from a payout attempt is left in the database and removed here,
+/// because a refund signature cannot share a witness with the pot key.
+async fn post_refund(
+    State(state): State<AppState>,
+    Path(id): Path<String>,
+    Json(body): Json<RefundBody>,
+) -> Result<Json<RefundResponse>, ApiError> {
+    let pot = require_pot(&state, &id)?;
+    if pot.status == "paid" {
+        return Err(reject(&id, "This pot is already paid."));
+    }
+    let locktime = pot
+        .deadline_unix
+        .saturating_add(crate::config::GRACE_SECONDS as i64);
+    if now_unix() <= locktime {
+        return Err(reject(&id, "The refund lock has not expired."));
+    }
+    if !lock::refund_pubkey_ok(&body.refund_pubkey) {
+        return Err(reject(
+            &id,
+            "The refund key is not a compressed public key.",
+        ));
+    }
+    if matches!(state.mint, MintBackend::Live) && pot.mint_url.is_empty() {
+        return Err(reject(&id, "Mint URL is not set."));
+    }
+    let stored = with_db(&state, |connection| db::proofs_for_pot(connection, &pot.id))?;
+    let mut proofs = Vec::new();
+    for row in stored {
+        let proof: cashu::Proof = serde_json::from_str(&row.proof)
+            .map_err(|_| reject(&id, "The stored proof could not be read."))?;
+        if lock::secret_refund_matches(&proof.secret.to_string(), &body.refund_pubkey) {
+            proofs.push(proof);
+        }
+    }
+    if proofs.is_empty() {
+        return Err(reject(&id, "No proof is locked to that refund key."));
+    }
+    mint::check_proofs(&state.mint, &pot.mint_url, &proofs).await?;
+    let mut returned = Vec::with_capacity(proofs.len());
+    for mut proof in proofs {
+        proof.witness = None;
+        let value = serde_json::to_value(&proof)
+            .map_err(|_| reject(&id, "The stored proof could not be read."))?;
+        returned.push(value);
+    }
+    Ok(Json(RefundResponse { proofs: returned }))
 }
 
 async fn not_found() -> ApiError {
@@ -833,15 +883,14 @@ mod tests {
             .clone()
             .oneshot(post_json(
                 &format!("/api/pots/{id}/refunds"),
-                proofs.clone(),
+                serde_json::json!({ "refund_pubkey": compressed("03", "22") }),
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = json_body(response).await;
-        assert_eq!(body["error"], "not_implemented");
-        assert_eq!(body["route"], "refunds");
-        assert_eq!(body["owner"], "Y");
+        assert_eq!(body["message"], "The refund lock has not expired.");
+        assert!(body.get("proofs").is_none());
 
         let response = app
             .clone()
@@ -1724,6 +1773,209 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn refund_returns_the_matching_proof_after_the_lock() {
+        let server = compressed("02", "11");
+        let refund = compressed("03", "22");
+        let other_refund = compressed("03", "44");
+        let (app, path) = open_app(
+            Some(server.clone()),
+            MintBackend::Scripted(crate::mint::ScriptedMint::Accept),
+            "http://127.0.0.1:9".to_string(),
+        );
+        let created = create_cause(&app, 1_000).await;
+        let id = created["id"].as_str().unwrap().to_string();
+        let locktime = created["locktime_unix"].as_i64().unwrap();
+        let secret = v1_secret_nonce(&server, &refund, locktime, "refund-4");
+        let other = v1_secret_nonce(&server, &other_refund, locktime, "other-4");
+        for (key, proof_secret, amount) in [
+            (refund.as_str(), secret.as_str(), 4u64),
+            (other_refund.as_str(), other.as_str(), 5u64),
+        ] {
+            let response = app
+                .clone()
+                .oneshot(post_json(
+                    &format!("/api/pots/{id}/contributions"),
+                    serde_json::json!({
+                        "refund_pubkey": key,
+                        "proofs": [signed_proof(proof_secret, amount)],
+                    }),
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let early = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/refunds"),
+                serde_json::json!({ "refund_pubkey": refund }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(early.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(early).await["message"],
+            "The refund lock has not expired."
+        );
+
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let changed = connection
+            .execute(
+                "UPDATE pots SET deadline_unix = ?1 WHERE id = ?2",
+                rusqlite::params![1_700_000_000_i64, id],
+            )
+            .unwrap();
+        assert_eq!(changed, 1);
+        let stored: String = connection
+            .query_row(
+                "SELECT proof FROM contributions WHERE secret = ?1",
+                [secret.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let mut signed: cashu::Proof = serde_json::from_str(&stored).unwrap();
+        signed.sign_p2pk(SecretKey::generate()).unwrap();
+        let signed_json = serde_json::to_string(&signed).unwrap();
+        let updated = connection
+            .execute(
+                "UPDATE contributions SET proof = ?1 WHERE secret = ?2",
+                rusqlite::params![signed_json, secret.as_str()],
+            )
+            .unwrap();
+        assert_eq!(updated, 1);
+        drop(connection);
+        assert_eq!(witness_len(&path, &secret), 1);
+
+        let flipped = format!("02{}", "22".repeat(32));
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/refunds"),
+                serde_json::json!({ "refund_pubkey": flipped }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        let proofs = body["proofs"].as_array().unwrap();
+        assert_eq!(proofs.len(), 1);
+        assert_eq!(proofs[0]["amount"], 4);
+        assert_eq!(proofs[0]["secret"].as_str(), Some(secret.as_str()));
+        assert!(proofs[0].get("witness").is_none() || proofs[0]["witness"].is_null());
+        assert_eq!(witness_len(&path, &secret), 1);
+
+        let missing = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/refunds"),
+                serde_json::json!({ "refund_pubkey": compressed("03", "55") }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(missing).await["message"],
+            "No proof is locked to that refund key."
+        );
+
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "UPDATE pots SET status = 'paid' WHERE id = ?1",
+                [id.as_str()],
+            )
+            .unwrap();
+        drop(connection);
+        let paid = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/refunds"),
+                serde_json::json!({ "refund_pubkey": refund }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(paid.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            json_body(paid).await["message"],
+            "This pot is already paid."
+        );
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn refund_refuses_a_proof_the_mint_will_not_spend() {
+        let server = compressed("02", "11");
+        let refund = compressed("03", "22");
+        let (app, path) = open_app(
+            Some(server.clone()),
+            MintBackend::Scripted(crate::mint::ScriptedMint::NotSpendable),
+            "http://127.0.0.1:9".to_string(),
+        );
+        let created = create_cause(&app, 1_000).await;
+        let id = created["id"].as_str().unwrap().to_string();
+        let locktime = created["locktime_unix"].as_i64().unwrap();
+        let secret = v1_secret_nonce(&server, &refund, locktime, "spent-4");
+        // The contribution route would refuse this mint, so the row is inserted
+        // directly. The refund route is what asks the mint.
+        let proof = signed_proof(&secret, 4);
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO contributions (
+                    id, pot_id, created_at_unix, amount_sats, secret, proof
+                ) VALUES (?1, ?2, ?3, 4, ?4, ?5)",
+                rusqlite::params![
+                    uuid::Uuid::new_v4().to_string(),
+                    id.as_str(),
+                    now_unix(),
+                    secret.as_str(),
+                    proof.to_string(),
+                ],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE pots SET deadline_unix = ?1 WHERE id = ?2",
+                rusqlite::params![1_700_000_000_i64, id],
+            )
+            .unwrap();
+        drop(connection);
+        let response = app
+            .clone()
+            .oneshot(post_json(
+                &format!("/api/pots/{id}/refunds"),
+                serde_json::json!({ "refund_pubkey": refund }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = json_body(response).await;
+        assert_eq!(body["message"], crate::mint::SPENDABLE);
+        assert!(body.get("proofs").is_none());
+        assert!(!body["message"].as_str().unwrap().contains(&secret));
+        let _ = std::fs::remove_file(path);
+    }
+
+    fn witness_len(path: &std::path::Path, secret: &str) -> usize {
+        let connection = rusqlite::Connection::open(path).unwrap();
+        let stored: String = connection
+            .query_row(
+                "SELECT proof FROM contributions WHERE secret = ?1",
+                [secret],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let proof: cashu::Proof = serde_json::from_str(&stored).unwrap();
+        proof
+            .witness
+            .as_ref()
+            .and_then(|witness| witness.signatures())
+            .map(|signatures| signatures.len())
+            .unwrap_or(0)
     }
 
     async fn create_cause(app: &Router, target_sats: u64) -> serde_json::Value {

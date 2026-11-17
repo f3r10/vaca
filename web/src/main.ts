@@ -4,13 +4,14 @@ import {
   getHealth,
   getPot,
   listPots,
+  postRefund,
   postUnimplemented,
   type Health,
   type Pot,
 } from "./api";
 import { createSecret, secretMatchesPot } from "./lock";
 import { CASHU_TS_COMMIT, CASHU_TS_VERSION, CDK_GIT_REV } from "./pins";
-import { generateRefundKey, refundKeyFile } from "./refund-key";
+import { generateRefundKey, pubkeyFromRefundFile, refundKeyFile } from "./refund-key";
 
 let refundPubkey: string | null = null;
 
@@ -365,12 +366,16 @@ function moneyActions(pot: Pot): HTMLElement {
   const result = document.createElement("p");
   result.className = "result";
   box.append(
-    heading("Not implemented"),
+    heading("Money"),
     paragraph(
-      "Contribute, pay out, and refund are refused by the server. A click sends an empty body and does not attach a proof or a key.",
+      "Contribute sends an empty body. Pay out asks the server to melt. Refund reads a key file in the browser and sends only the public key. The server returns proofs after the lock time and does not spend them.",
     ),
   );
-  for (const route of ["contributions", "payout", "refunds"] as const) {
+  const file = document.createElement("input");
+  file.type = "file";
+  file.accept = ".txt,text/plain";
+  box.append(file);
+  for (const route of ["contributions", "payout"] as const) {
     const button = document.createElement("button");
     button.type = "button";
     button.className = "secondary";
@@ -388,7 +393,32 @@ function moneyActions(pot: Pot): HTMLElement {
     });
     box.append(button);
   }
-  box.append(result);
+  const refund = document.createElement("button");
+  refund.type = "button";
+  refund.className = "secondary";
+  refund.textContent = "Refund";
+  refund.addEventListener("click", () => {
+    void (async () => {
+      result.textContent = "";
+      const chosen = file.files?.[0];
+      if (!chosen) {
+        result.textContent = "Choose the refund key file first.";
+        return;
+      }
+      const pubkey = pubkeyFromRefundFile(await chosen.text());
+      if (pubkey === null) {
+        result.textContent = "The file has no public key line.";
+        return;
+      }
+      try {
+        const body = await postRefund(pot.id, pubkey);
+        result.textContent = `${body.proofs.length} proofs can be reclaimed. This page does not spend them yet.`;
+      } catch (err) {
+        result.textContent = errorText(err);
+      }
+    })();
+  });
+  box.append(refund, result);
   return box;
 }
 
@@ -415,10 +445,9 @@ function potList(pots: Pot[]): HTMLElement {
   return list;
 }
 
-function labelForRoute(route: "contributions" | "payout" | "refunds"): string {
+function labelForRoute(route: "contributions" | "payout"): string {
   if (route === "contributions") return "Contribute (not implemented)";
-  if (route === "payout") return "Pay out";
-  return "Refund (not implemented)";
+  return "Pay out";
 }
 
 function kindLabel(kind: string): string {

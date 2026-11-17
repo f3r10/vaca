@@ -127,6 +127,12 @@ export function postRefund(id: string, refundPubkey: string): Promise<{ proofs: 
   });
 }
 
+export function postPayout(id: string): Promise<Pot> {
+  return request<Pot>(`/api/pots/${encodeURIComponent(id)}/payout`, {
+    method: "POST",
+  });
+}
+
 export function postContribution(
   id: string,
   refundPubkey: string,

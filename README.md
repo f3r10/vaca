@@ -23,12 +23,6 @@ A refund backup will be a file the browser downloads. A URL that contains the ke
 - The mint lock time is the advertised deadline plus 600 seconds. The server stops co-signing at the advertised deadline, which is earlier than the moment the refund path opens. The post-deadline race remains.
 - The cap is 100,000 sats. `VACA_MAX_POT_SATS` may lower it. It cannot raise it. `VACA_GRACE_SECONDS` must be 600 if it is set.
 
-## Who writes what
-
-C, in this repo now: the crate, the Vite + TypeScript page, HTTP and sqlite plumbing, CORS, the demo script, and the regtest mint script.
-
-Y owns the lock rules, the pot state machine, the target-met check including the fee reserve, multi-party signing, the refund flow, and browser key handling. The contributions route counts a proof that passes the lock check and the mint check. `POST /api/pots/{id}/payout` signs each stored proof when the quote amount equals the target, the locked total covers the fee reserve, and the advertised deadline has not passed. `/refunds` returns 501. Reaching the target does not melt. The gate uses the mint's quote when the destination is BOLT11 or BOLT12.
-
 ## Pins
 
 The server pins the `cashu` crate `0.18.0` from crates.io, the version on CDK git revision `24360fe5fabda9d8aa3ae98b1a7e5e15986aad5a`. It does not path-depend on `~/projects/cdk-nutnov`, and it does not link the cdk crate.

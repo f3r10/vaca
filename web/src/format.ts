@@ -8,7 +8,7 @@ export function formatNumber(n: number): string {
 
 /** Grouped digits, unit always attached. */
 export function formatSats(n: number): string {
-  return `${formatNumber(n)} ${t.sats}`;
+  return n === 1 ? `1 ${t.sat}` : `${formatNumber(n)} ${t.sats}`;
 }
 
 export type DestinationKind = "bolt11" | "bolt12" | "unknown";

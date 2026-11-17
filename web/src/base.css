@@ -37,6 +37,9 @@
 
   button, input, select, textarea { font: inherit; color: inherit; }
 
+  [hidden] { display: none !important; }
+  [tabindex="-1"]:focus { outline: none; }
+
   .muted { color: var(--color-text-secondary); }
   .mono { font-family: var(--font-mono); font-size: 0.9em; }
   .wrap { overflow-wrap: anywhere; }

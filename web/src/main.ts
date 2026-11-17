@@ -42,7 +42,12 @@ function swap(el: HTMLElement, title: string, route: string, dispose: (() => voi
     (main.querySelector("h1") as HTMLElement | null)?.setAttribute("tabindex", "-1");
     (main.querySelector("h1") as HTMLElement | null)?.focus({ preventScroll: true });
   };
-  if (typeof document.startViewTransition === "function" && !reduced()) document.startViewTransition(apply);
+  if (typeof document.startViewTransition === "function" && !reduced()) {
+    const vt = document.startViewTransition(apply);
+    // A transition can be skipped (hidden tab, quick navigation). The update still runs.
+    vt.ready.catch(() => undefined);
+    vt.finished.catch(() => undefined);
+  }
   else apply();
 }
 

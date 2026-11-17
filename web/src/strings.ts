@@ -11,6 +11,7 @@ export const en = {
     paid: "Paid",
   },
   sats: "sats",
+  sat: "sat",
   of: "of",
   target: "Target",
   locked: "locked",

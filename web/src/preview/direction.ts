@@ -5,8 +5,7 @@ import "./preview.css";
 import { h } from "../ui/dom";
 import { logoMark } from "../ui/logo";
 import { mockPot } from "./mock";
-import { mountPicker } from "./picker";
-import { VARIANTS } from "./variants";
+import { potCard } from "../ui/pot-card";
 
 const app = document.querySelector<HTMLElement>("#app");
 if (!app) throw new Error("Missing #app");
@@ -84,26 +83,17 @@ function motion(): HTMLElement {
   return h("div", { class: "motion-demo" }, bar, replay, h("p", { class: "muted" }, "700 ms, ease-out. Becomes instant under prefers-reduced-motion."));
 }
 
-function stage(): HTMLElement {
-  const stageEl = h("div", { class: "variant-stage" });
-  const render = (id: string) => {
-    const variant = VARIANTS.flatMap((g) => g.items).find((v) => v.id === id);
-    if (!variant) return;
-    const now = Math.floor(Date.now() / 1000);
-    stageEl.replaceChildren(
-      h("div", { class: "states" },
-        h("p", { class: "states-label" }, "Partly funded, fee quoted"),
-        variant.build(mockPot("partial", now), now),
-        h("p", { class: "states-label" }, "Fee gate open"),
-        variant.build(mockPot("ready", now), now),
-        h("p", { class: "states-label" }, "Refunds open"),
-        variant.build(mockPot("refundable", now), now),
-      ),
-    );
-  };
-  const { list, select } = mountPicker(VARIANTS, render);
-  const layout = h("div", { class: "variant-layout" }, list, select, stageEl);
-  return h("div", { class: "variant-page" }, layout);
+function cards(): HTMLElement {
+  const now = Math.floor(Date.now() / 1000);
+  return h(
+    "div",
+    { class: "states" },
+    h("p", { class: "states-label" }, "Partly funded, fee quoted"),
+    potCard(mockPot("partial", now), now),
+    h("p", { class: "states-label" }, "Target reached"),
+    potCard(mockPot("ready", now), now),
+    h("p", { class: "muted" }, "Every state lives on the state page: /states.html"),
+  );
 }
 
 app.append(
@@ -122,6 +112,6 @@ app.append(
     h("section", {}, h("h2", {}, "Colour"), swatches()),
     h("section", {}, h("h2", {}, "Type"), h("p", { class: "muted" }, "Fraunces for titles and amounts, Inter for text. Both self-hosted. Minor-third scale."), typeScale()),
     h("section", {}, h("h2", {}, "Motion"), motion()),
-    h("section", {}, h("h2", {}, "Pot card, two answers"), h("p", { class: "muted" }, "Use the list (or arrow keys) to switch. H hides the picker."), stage()),
+    h("section", {}, h("h2", {}, "Pot card"), h("p", { class: "muted" }, "Numbers lead. The milk churn appears when the target is reached."), cards()),
   ),
 );

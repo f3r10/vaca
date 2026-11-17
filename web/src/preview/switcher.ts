@@ -1,18 +1,17 @@
 import { h, svg } from "../ui/dom";
-import type { CardBuilder } from "./variants";
 
-interface Group { group: string; items: { id: string; label: string; build: CardBuilder }[] }
+export interface Group { group: string; items: { id: string; label: string }[] }
 
 const ARROW = `<path d="m4 6 4 4 4-4"/>`;
 
-/** Variant picker per the variant skill: grouped list, select fallback, ?__variant=, arrows, H to hide. */
-export function mountPicker(groups: Group[], onChange: (id: string) => void): { list: HTMLElement; select: HTMLElement } {
+/** Grouped list, select fallback, ?__<param>=, arrows, H to hide. Outside the design system on purpose. */
+export function mountSwitcher(param: string, groups: Group[], onChange: (id: string) => void): { list: HTMLElement; select: HTMLElement } {
   const all = groups.flatMap((g) => g.items);
-  const param = new URLSearchParams(location.search).get("__variant");
-  let active = all.find((v) => v.id === param)?.id ?? all[0].id;
+  const fromUrl = new URLSearchParams(location.search).get(param);
+  let active = all.find((v) => v.id === fromUrl)?.id ?? all[0].id;
 
-  const nav = h("nav", { class: "variant-picker", "aria-label": "Variants" });
-  const select = h("select", { "aria-label": "Variant" });
+  const nav = h("nav", { class: "variant-picker", "aria-label": "States" });
+  const select = h("select", { "aria-label": "State" });
   const buttons = new Map<string, HTMLButtonElement>();
 
   for (const g of groups) {
@@ -38,7 +37,7 @@ export function mountPicker(groups: Group[], onChange: (id: string) => void): { 
     (select as HTMLSelectElement).value = id;
     buttons.get(id)?.scrollIntoView({ block: "nearest" });
     const url = new URL(location.href);
-    url.searchParams.set("__variant", id);
+    url.searchParams.set(param, id);
     history.replaceState(null, "", url);
     onChange(id);
   }

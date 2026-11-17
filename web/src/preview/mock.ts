@@ -6,7 +6,7 @@ const MINT = "http://127.0.0.1:8085";
 const BOLT11 = "lnbcrt840u1pn7x8k2pp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdqqcqzzsxqyz5vqsp5zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zyg3zygs";
 const BOLT12 = "lno1pgx9getnwss8vetrw3hhyuckyypwa3eyt44h6txtxquqh7lz5djge4afgfjn7k4rgrkuag0jsd5xvxg";
 
-export type MockName = "partial" | "ready" | "refundable" | "empty";
+export type MockName = "empty" | "partial" | "awaiting-fee" | "ready" | "grace" | "refundable" | "paid" | "bad-destination";
 
 export function mockPot(name: MockName, now = Math.floor(Date.now() / 1000)): Pot {
   const base: Pot = {
@@ -68,6 +68,58 @@ export function mockPot(name: MockName, now = Math.floor(Date.now() / 1000)): Po
         quote_amount_sats: 50_000,
         sats_still_needed: 0,
         payout_allowed: true,
+      };
+      break;
+    case "awaiting-fee":
+      pot = {
+        ...base,
+        title: "Espresso machine for the climbing gym",
+        locked_sats: 84_000,
+        contribution_count: 14,
+        sats_still_needed: 0,
+      };
+      break;
+    case "grace":
+      pot = {
+        ...base,
+        kind: "split_bill",
+        title: "Dinner at La Choza, table of eight",
+        target_sats: 8_400,
+        deadline_unix: now - 4 * 60,
+        locked_sats: 8_460,
+        contribution_count: 8,
+        fee_quoted: true,
+        fee_reserve_sats: 60,
+        quote_amount_sats: 8_400,
+        sats_still_needed: 0,
+      };
+      break;
+    case "paid":
+      pot = {
+        ...base,
+        kind: "cause",
+        title: "A new roof for the Quito animal shelter",
+        target_sats: 50_000,
+        deadline_unix: now + 5 * 3600,
+        destination: BOLT12,
+        status: "paid",
+        locked_sats: 50_120,
+        contribution_count: 23,
+        fee_quoted: true,
+        fee_reserve_sats: 120,
+        quote_amount_sats: 50_000,
+        sats_still_needed: 0,
+      };
+      break;
+    case "bad-destination":
+      pot = {
+        ...base,
+        title: "Shared taxi to the airport",
+        target_sats: 12_000,
+        destination: "asd",
+        locked_sats: 2_000,
+        contribution_count: 2,
+        sats_still_needed: 10_000,
       };
       break;
     case "refundable":

@@ -26,6 +26,8 @@ export interface Pot {
   destination: string;
   mint_url: string;
   organizer_pubkey: string | null;
+  /** Compressed key proofs must lock to. Null when the server has no key. */
+  server_pubkey: string | null;
   status: string;
   created_at_unix: number;
   contribution_count: number;

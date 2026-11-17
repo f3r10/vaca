@@ -165,7 +165,7 @@ async fn list_pots(State(state): State<AppState>) -> Result<Json<PotList>, ApiEr
             }
         };
         let (view, _) = pot.view(&melt_quote_lookup);
-        pots.push(view)
+        pots.push(show_server_pubkey(&state, view))
     }
     Ok(Json(PotList { pots }))
 }
@@ -192,7 +192,7 @@ async fn get_pot(
         }
     };
     let (view, _) = pot.view(&melt_quote_lookup);
-    Ok(Json(view))
+    Ok(Json(show_server_pubkey(&state, view)))
 }
 
 async fn create_pot(
@@ -229,7 +229,7 @@ async fn create_pot(
         }
     };
     let (view, _) = stored.view(&melt_quote_lookup);
-    Ok((StatusCode::CREATED, Json(view)))
+    Ok((StatusCode::CREATED, Json(show_server_pubkey(&state, view))))
 }
 
 #[derive(Deserialize)]
@@ -365,7 +365,7 @@ async fn post_contribution(
         "counted proofs"
     );
     let (view, _) = stored.view(&melt_quote_lookup);
-    Ok(Json(view))
+    Ok(Json(show_server_pubkey(&state, view)))
 }
 
 fn reject(pot_id: &str, message: &str) -> ApiError {
@@ -441,7 +441,7 @@ async fn payout(
     let pot = require_pot(&state, &id)?;
     if pot.status == "paid" {
         let (view, _) = pot.view(&mint::MeltQuoteLookup::Unavailable);
-        return Ok(Json(view));
+        return Ok(Json(show_server_pubkey(&state, view)));
     }
     let melt_quote_lookup = match state.quote_cache.get_fresh(
         &(pot.mint_url.clone(), pot.destination.clone()),
@@ -563,7 +563,13 @@ async fn payout(
         fee_reserve_sats: paid.fee_reserve_sats,
         expiry_unix: u64::MAX,
     }));
-    Ok(Json(view))
+    Ok(Json(show_server_pubkey(&state, view)))
+}
+
+/// Puts the configured spend key on a pot response. Health stays a boolean.
+fn show_server_pubkey(state: &AppState, mut view: PotView) -> PotView {
+    view.server_pubkey = state.config.server_pubkey.clone();
+    view
 }
 
 #[derive(Deserialize)]
@@ -792,7 +798,110 @@ mod tests {
         assert_eq!(body["server_pubkey_set"], false);
         assert_eq!(body["cdk_linked"], false);
         assert_eq!(body["cashu_ts"], "5.0.0-rc.12");
+        assert!(body.get("server_pubkey").is_none());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn pot_view_includes_the_server_pubkey_and_health_omits_it() {
+        let (unset, unset_path) = test_app();
+        let created = json_body(
+            unset
+                .clone()
+                .oneshot(post_json(
+                    "/api/pots",
+                    serde_json::json!({
+                        "title": "No key",
+                        "kind": "cause",
+                        "target_sats": 1_000,
+                        "deadline_unix": now_unix() + 86_400,
+                        "destination": "lnbc50n1example"
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(created.get("server_pubkey"), Some(&serde_json::Value::Null));
+        let unset_health = json_body(
+            unset
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/health")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(unset_health.get("server_pubkey").is_none());
+        assert_eq!(unset_health["server_pubkey_set"], false);
+        let _ = std::fs::remove_file(unset_path);
+
+        let pubkey = format!("02{}", "ab".repeat(32));
+        let (set, set_path) = test_app_with(Some(pubkey.clone()));
+        let created = json_body(
+            set.clone()
+                .oneshot(post_json(
+                    "/api/pots",
+                    serde_json::json!({
+                        "title": "With key",
+                        "kind": "cause",
+                        "target_sats": 1_000,
+                        "deadline_unix": now_unix() + 86_400,
+                        "destination": "lnbc50n1example"
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(created["server_pubkey"].as_str(), Some(pubkey.as_str()));
+        let id = created["id"].as_str().unwrap();
+        let fetched = json_body(
+            set.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/pots/{id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(fetched["server_pubkey"].as_str(), Some(pubkey.as_str()));
+        let list = json_body(
+            set.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/pots")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            list["pots"][0]["server_pubkey"].as_str(),
+            Some(pubkey.as_str())
+        );
+        let set_health = json_body(
+            set.oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert!(set_health.get("server_pubkey").is_none());
+        assert_eq!(set_health["server_pubkey_set"], true);
+        let _ = std::fs::remove_file(set_path);
     }
 
     #[tokio::test]

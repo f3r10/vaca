@@ -43,6 +43,9 @@ pub struct PotView {
     pub destination: String,
     pub mint_url: String,
     pub organizer_pubkey: Option<String>,
+    /// Compressed public key a contribution must lock to. Null when the
+    /// server has no key configured. This is not the organizer key.
+    pub server_pubkey: Option<String>,
     pub status: String,
     pub created_at_unix: i64,
     pub contribution_count: i64,
@@ -144,6 +147,9 @@ impl StoredPot {
                 destination: self.destination.clone(),
                 mint_url: self.mint_url.clone(),
                 organizer_pubkey: self.organizer_pubkey.clone(),
+                // The row does not store this. The HTTP layer copies it from
+                // the process config onto the response.
+                server_pubkey: None,
                 status: self.status.clone(),
                 created_at_unix: self.created_at_unix,
                 contribution_count: self.contribution_count,

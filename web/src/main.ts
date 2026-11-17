@@ -11,7 +11,8 @@ import {
 } from "./api";
 import { createSecret, secretMatchesPot } from "./lock";
 import { CASHU_TS_COMMIT, CASHU_TS_VERSION, CDK_GIT_REV } from "./pins";
-import { generateRefundKey, pubkeyFromRefundFile, refundKeyFile } from "./refund-key";
+import { generateRefundKey, privkeyFromRefundFile, pubkeyFromRefundFile, refundKeyFile, refundKeyMatches } from "./refund-key";
+import { RefundSwapError, readRefundProofs, refundSats, refundToken, swapRefundProofs } from "./refund-swap";
 
 let refundPubkey: string | null = null;
 
@@ -51,7 +52,7 @@ function banner(): HTMLElement {
   const el = document.createElement("p");
   el.className = "banner";
   el.textContent =
-    "Experimental. Regtest or Mutinynet only. This page can create a refund key and download it as a file. It does not create the server key, lock ecash, or pay anyone.";
+    "Experimental. Regtest or Mutinynet only. This page can create a refund key and, after the lock time, swap that contributor's proofs into a token file. It does not create the server key or pay the pot.";
   return el;
 }
 
@@ -67,7 +68,7 @@ function trust(): HTMLElement {
       "v1, the first working version: the server key is the only pot key. The server can spend the locked ecash by itself. That is custodial for theft. If the server disappears, a contributor who still has the refund key can take their own sats back after the lock time, because the mint checks that key.",
     ),
     paragraph(
-      "After the lock time, both the pot key and the refund key can spend. The mint settles whichever valid spend it sees first. Take the refund as soon as the lock expires.",
+      "After the lock time, both the pot key and the refund key can spend. The mint settles whichever valid spend it sees first. Take the refund as soon as the lock expires. Refund swaps those proofs at the mint and downloads a token file. The private key stays in the refund file.",
     ),
     paragraph(
       "The mint is trusted, as with any Cashu mint. Losing the refund key loses the refund. A lock with no refund key would let anyone spend after the deadline. A malformed lock cannot be spent.",
@@ -100,16 +101,7 @@ async function renderHome(): Promise<void> {
 	  const pubkeyBlock = document.createElement("p");
 	  pubkeyBlock.textContent = key.pubkey;
 	  root.append(pubkeyBlock)
-	  const contents = refundKeyFile(key);
-	  const file = new Blob([contents], { type: "text/plain" });
-	  const url = URL.createObjectURL(file);
-	  const link = document.createElement("a");
-	  link.href = url;
-	  link.download = "vaca-refund-key.txt";
-	  root.append(link);
-	  link.click();
-	  link.remove();
-	  setTimeout(() => URL.revokeObjectURL(url), 0);
+	  downloadText("vaca-refund-key.txt", refundKeyFile(key));
   });
   root.append(btn_download_key)
 
@@ -368,13 +360,23 @@ function moneyActions(pot: Pot): HTMLElement {
   box.append(
     heading("Money"),
     paragraph(
-      "Contribute sends an empty body. Pay out asks the server to melt. Refund reads a key file in the browser and sends only the public key. The server returns proofs after the lock time and does not spend them.",
+      "Contribute sends an empty body. Pay out asks the server to melt. Refund reads a key file in the browser and sends only the public key. After the lock time the page signs with the refund key and swaps the proofs at the mint. The fresh proofs download as a token file.",
     ),
   );
   const file = document.createElement("input");
   file.type = "file";
   file.accept = ".txt,text/plain";
-  box.append(file);
+  let busy = false;
+  let reclaimed: { filename: string; contents: string } | null = null;
+  const save = document.createElement("button");
+  save.type = "button";
+  save.className = "secondary";
+  save.textContent = "Download token";
+  save.hidden = true;
+  save.addEventListener("click", () => {
+    if (!reclaimed) return;
+    downloadText(reclaimed.filename, reclaimed.contents);
+  });
   for (const route of ["contributions", "payout"] as const) {
     const button = document.createElement("button");
     button.type = "button";
@@ -399,27 +401,64 @@ function moneyActions(pot: Pot): HTMLElement {
   refund.textContent = "Refund";
   refund.addEventListener("click", () => {
     void (async () => {
+      if (busy) return;
+      busy = true;
+      refund.disabled = true;
       result.textContent = "";
-      const chosen = file.files?.[0];
-      if (!chosen) {
-        result.textContent = "Choose the refund key file first.";
-        return;
-      }
-      const pubkey = pubkeyFromRefundFile(await chosen.text());
-      if (pubkey === null) {
-        result.textContent = "The file has no public key line.";
-        return;
-      }
       try {
+        const chosen = file.files?.[0];
+        if (!chosen) {
+          result.textContent = "Choose the refund key file first.";
+          return;
+        }
+        const contents = await chosen.text();
+        const pubkey = pubkeyFromRefundFile(contents);
+        const privkey = privkeyFromRefundFile(contents);
+        if (pubkey === null) {
+          result.textContent = "The file has no public key line.";
+          return;
+        }
+        if (privkey === null) {
+          result.textContent = "The file has no private key line.";
+          return;
+        }
+        if (!refundKeyMatches(pubkey, privkey)) {
+          result.textContent = "The private key does not match the public key in that file.";
+          return;
+        }
+        if (pot.mint_url === "") {
+          result.textContent = "Mint URL is not set.";
+          return;
+        }
         const body = await postRefund(pot.id, pubkey);
-        result.textContent = `${body.proofs.length} proofs can be reclaimed. This page does not spend them yet.`;
+        const locked = readRefundProofs(body.proofs);
+        const fresh = await swapRefundProofs(pot.mint_url, locked, privkey);
+        reclaimed = refundToken(pot.mint_url, fresh);
+        save.hidden = false;
+        result.textContent = `Reclaimed ${refundSats(fresh)} sats. Download the token file if the browser did not. The mint has taken the locked proofs.`;
+        downloadText(reclaimed.filename, reclaimed.contents);
       } catch (err) {
-        result.textContent = errorText(err);
+        result.textContent = err instanceof RefundSwapError ? err.message : errorText(err);
+      } finally {
+        busy = false;
+        refund.disabled = false;
       }
     })();
   });
-  box.append(refund, result);
+  box.append(file, refund, save, result);
   return box;
+}
+
+function downloadText(filename: string, contents: string): void {
+  const blob = new Blob([contents], { type: "text/plain" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  root.append(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
 }
 
 function potList(pots: Pot[]): HTMLElement {

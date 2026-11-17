@@ -47,7 +47,7 @@ impl IntoResponse for ApiError {
                 StatusCode::NOT_IMPLEMENTED,
                 ErrorBody {
                     error: "not_implemented",
-                    message: Some("Signing, melt, and refunds are not implemented.".to_string()),
+                    message: Some("Refunds are not implemented.".to_string()),
                     route: Some(*route),
                     owner: Some("Y"),
                 },

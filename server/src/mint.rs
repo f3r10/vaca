@@ -139,16 +139,19 @@ pub async fn melt_quote(
     }
 }
 
-/// The quote the spend used. The fee-gate cache does not keep the mint's quote id.
+/// The quote the spend used, plus any NUT-08 change proofs.
+/// The fee-gate cache does not keep the mint's quote id.
 #[derive(Debug)]
 pub struct PaidMelt {
     pub amount_sats: u64,
     pub fee_reserve_sats: u64,
+    /// Unblinded change. Empty when the mint kept the whole reserve.
+    pub change: Vec<Proof>,
 }
 
 /// Spends the signed proofs at the pot's mint. `Ok` means the mint reported `Paid`.
-/// This asks for a new quote and does not read the fee-gate cache. No change outputs
-/// are sent, so the mint keeps any unused reserve.
+/// This asks for a new quote and does not read the fee-gate cache. Blank outputs
+/// cover the sats locked above the invoice amount. The mint assigns the change.
 pub async fn melt_proofs(
     backend: &MintBackend,
     mint_url: &str,
@@ -167,9 +170,11 @@ pub async fn melt_proofs(
         MintBackend::Scripted(kind) => {
             let quote = scripted_quote(*kind, target_sats);
             covered(&quote, target_sats, locked_sats)?;
+            let change = scripted_change(locked_sats, quote.amount_sats)?;
             Ok(PaidMelt {
                 amount_sats: quote.amount_sats,
                 fee_reserve_sats: quote.fee_reserve_sats,
+                change,
             })
         }
         MintBackend::Live => {
@@ -250,6 +255,8 @@ struct SpendQuoteResponse {
 #[derive(Debug, Deserialize)]
 struct MeltResponse {
     state: cashu::MeltQuoteState,
+    #[serde(default)]
+    change: Option<Vec<cashu::BlindSignature>>,
 }
 
 async fn live_melt(
@@ -295,17 +302,205 @@ async fn live_melt(
         expiry_unix: 0,
     };
     covered(&quote, target_sats, locked_sats)?;
+    // Lightning may spend the whole fee reserve. The blank outputs cover the
+    // maximum that can come back: the locked total minus the invoice amount.
+    // Each blank has amount 0. The mint assigns the real amounts on the way back.
+    let surplus = locked_sats
+        .checked_sub(quote.amount_sats)
+        .ok_or_else(|| ApiError::BadRequest(UNPAID.to_string()))?;
+    let blanks = if surplus == 0 {
+        None
+    } else {
+        let keyset_id = active_sat_keyset_id(&client, base).await?;
+        match cashu::nuts::PreMintSecrets::blank(keyset_id, cashu::Amount::from(surplus)) {
+            Ok(premint) => Some(premint),
+            Err(_) => return Err(ApiError::BadRequest(UNPAID.to_string())),
+        }
+    };
     // `MeltRequest::new` drops the DLEQ. cashu 0.18 already writes the P2PK
     // witness as a string of JSON, which is the shape CDK accepts.
-    let request = cashu::MeltRequest::new(quoted.quote, proofs.to_vec(), None);
+    let request = cashu::MeltRequest::new(
+        quoted.quote,
+        proofs.to_vec(),
+        blanks.as_ref().map(|premint| premint.blinded_messages()),
+    );
     let paid: MeltResponse = post_json(&client, &format!("{base}/v1/melt/{method}"), &request)
         .await
         .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
     finished(paid.state)?;
+    let change = match blanks {
+        None => Vec::new(),
+        Some(premint) => {
+            unblind_change(&client, base, &premint, paid.change.unwrap_or_default()).await?
+        }
+    };
     Ok(PaidMelt {
         amount_sats: quote.amount_sats,
         fee_reserve_sats: quote.fee_reserve_sats,
+        change,
     })
+}
+
+async fn active_sat_keyset_id(
+    client: &reqwest::Client,
+    base: &str,
+) -> Result<cashu::nuts::Id, ApiError> {
+    let keysets: KeysetResponse = get_json(client, &format!("{base}/v1/keysets"))
+        .await
+        .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+    keysets
+        .keysets
+        .into_iter()
+        .find(|keyset| keyset.active && keyset.unit == CurrencyUnit::Sat)
+        .map(|keyset| keyset.id)
+        .ok_or_else(|| ApiError::BadRequest(UNPAID.to_string()))
+}
+
+async fn sat_keyset_keys(
+    client: &reqwest::Client,
+    base: &str,
+    keyset_id: &cashu::nuts::Id,
+) -> Result<cashu::nuts::Keys, ApiError> {
+    let keys_body: KeysResponse = get_json(client, &format!("{base}/v1/keys/{keyset_id}"))
+        .await
+        .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+    keys_body
+        .keysets
+        .into_iter()
+        .find(|keyset| &keyset.id == keyset_id)
+        .map(|keyset| keyset.keys)
+        .ok_or_else(|| ApiError::BadRequest(UNPAID.to_string()))
+}
+
+/// Keeps signatures the mint filled in. A zero amount is not spendable.
+/// A longer list, or a signature from another keyset, fails the unblind.
+fn keep_change(
+    premint: &cashu::nuts::PreMintSecrets,
+    signatures: Vec<cashu::BlindSignature>,
+) -> Result<
+    Vec<(
+        cashu::BlindSignature,
+        cashu::secret::Secret,
+        cashu::nuts::SecretKey,
+    )>,
+    ApiError,
+> {
+    if signatures.is_empty() {
+        return Ok(Vec::new());
+    }
+    let secrets = premint.secrets();
+    let rs = premint.rs();
+    if signatures.len() > secrets.len() || signatures.len() > rs.len() {
+        return Err(ApiError::BadRequest(UNPAID.to_string()));
+    }
+    let mut kept = Vec::new();
+    for (index, signature) in signatures.into_iter().enumerate() {
+        if signature.keyset_id != premint.keyset_id {
+            return Err(ApiError::BadRequest(UNPAID.to_string()));
+        }
+        if signature.amount == cashu::Amount::ZERO {
+            continue;
+        }
+        kept.push((signature, secrets[index].clone(), rs[index].clone()));
+    }
+    Ok(kept)
+}
+
+async fn unblind_change(
+    client: &reqwest::Client,
+    base: &str,
+    premint: &cashu::nuts::PreMintSecrets,
+    signatures: Vec<cashu::BlindSignature>,
+) -> Result<Vec<Proof>, ApiError> {
+    let kept = keep_change(premint, signatures)?;
+    if kept.is_empty() {
+        return Ok(Vec::new());
+    }
+    let keys = sat_keyset_keys(client, base, &premint.keyset_id).await?;
+    let mut promises = Vec::with_capacity(kept.len());
+    let mut secrets = Vec::with_capacity(kept.len());
+    let mut rs = Vec::with_capacity(kept.len());
+    for (promise, secret, r) in kept {
+        promises.push(promise);
+        secrets.push(secret);
+        rs.push(r);
+    }
+    cashu::dhke::construct_proofs(promises, rs, secrets, &keys).map_err(|_| {
+        tracing::error!("change unblind failed");
+        ApiError::BadRequest(UNPAID.to_string())
+    })
+}
+
+/// The scripted mint pretends Lightning spent nothing, so the change is the
+/// whole surplus. It does not open a socket. A zero surplus sends no outputs.
+fn scripted_change(locked_sats: u64, amount_sats: u64) -> Result<Vec<Proof>, ApiError> {
+    use cashu::dhke::{construct_proofs, sign_message};
+    use cashu::nuts::{Id, Keys, PreMintSecrets, SecretKey};
+    use cashu::{Amount, BlindSignature};
+    use std::collections::BTreeMap;
+    use std::str::FromStr;
+
+    let surplus = locked_sats
+        .checked_sub(amount_sats)
+        .ok_or_else(|| ApiError::BadRequest(UNPAID.to_string()))?;
+    if surplus == 0 {
+        return Ok(Vec::new());
+    }
+    let keyset_id =
+        Id::from_str("0011111111111111").map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+    let premint = PreMintSecrets::blank(keyset_id, Amount::from(surplus))
+        .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+    let amounts = change_denominations(surplus);
+    if amounts.len() > premint.secrets().len() {
+        return Err(ApiError::BadRequest(UNPAID.to_string()));
+    }
+    let mint_key = SecretKey::generate();
+    let mint_pubkey = mint_key.public_key();
+    let mut keys = BTreeMap::new();
+    let mut promises = Vec::new();
+    for (pre, amount) in premint.secrets.iter().zip(amounts) {
+        let amount = Amount::from(amount);
+        keys.insert(amount, mint_pubkey);
+        let signed = sign_message(&mint_key, &pre.blinded_message.blinded_secret)
+            .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+        let promise = BlindSignature::new(
+            amount,
+            signed,
+            keyset_id,
+            &pre.blinded_message.blinded_secret,
+            &mint_key,
+        )
+        .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+        promises.push(promise);
+    }
+    let count = promises.len();
+    let secrets = premint.secrets().into_iter().take(count).collect();
+    let rs = premint.rs().into_iter().take(count).collect();
+    let proofs = construct_proofs(promises, rs, secrets, &Keys::new(keys))
+        .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+    for proof in &proofs {
+        proof
+            .verify_dleq(mint_pubkey)
+            .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+    }
+    Ok(proofs)
+}
+
+/// Powers of two that sum to `surplus`. The blank count is large enough to hold them.
+fn change_denominations(surplus: u64) -> Vec<u64> {
+    let mut amounts = Vec::new();
+    let mut rest = surplus;
+    let mut power = 1u64;
+    while rest > 0 {
+        if rest & 1 == 1 {
+            amounts.push(power);
+        }
+        rest >>= 1;
+        if rest > 0 {
+            power = power.saturating_mul(2);
+        }
+    }
+    amounts
 }
 
 async fn live_check(mint_url: &str, proofs: &[Proof]) -> Result<(), ApiError> {
@@ -483,6 +678,45 @@ mod tests {
         .expect("paid");
         assert_eq!(paid.amount_sats, 1_000);
         assert_eq!(paid.fee_reserve_sats, 1);
+        assert_eq!(paid.change.len(), 1);
+        assert_eq!(u64::from(paid.change[0].amount), 1);
+    }
+
+    #[tokio::test]
+    async fn a_zero_surplus_returns_no_change() {
+        let proof = sign_proof("zero", 4);
+        let paid = melt_proofs(
+            &MintBackend::Scripted(ScriptedMint::Fee(0)),
+            "http://127.0.0.1:9",
+            "lno1qq",
+            1_000,
+            1_000,
+            &[proof],
+        )
+        .await
+        .expect("paid");
+        assert!(paid.change.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_three_sat_surplus_returns_two_proofs() {
+        let proof = sign_proof("three", 4);
+        let paid = melt_proofs(
+            &MintBackend::Scripted(ScriptedMint::Fee(0)),
+            "http://127.0.0.1:9",
+            "lno1qq",
+            1_000,
+            1_003,
+            &[proof],
+        )
+        .await
+        .expect("paid");
+        let amounts: Vec<u64> = paid
+            .change
+            .iter()
+            .map(|proof| u64::from(proof.amount))
+            .collect();
+        assert_eq!(amounts, vec![1, 2]);
     }
 
     #[test]
@@ -495,6 +729,27 @@ mod tests {
         assert!(json["outputs"].is_null());
         assert!(json["inputs"][0]["witness"].is_string());
         assert!(json["inputs"][0].get("dleq").is_none() || json["inputs"][0]["dleq"].is_null());
+    }
+
+    #[test]
+    fn a_one_sat_surplus_sends_one_blank_output() {
+        use cashu::nuts::{Id, PreMintSecrets};
+        use cashu::Amount;
+        use std::str::FromStr;
+
+        let keyset_id = Id::from_str("0011111111111111").expect("keyset id");
+        let blanks = PreMintSecrets::blank(keyset_id, Amount::from(1)).expect("blank");
+        let mut proof = sign_proof("blank-secret", 4);
+        proof.sign_p2pk(SecretKey::generate()).expect("sign");
+        let request = cashu::MeltRequest::new(
+            "quote-1".to_string(),
+            vec![proof],
+            Some(blanks.blinded_messages()),
+        );
+        let json = serde_json::to_value(&request).expect("json");
+        let outputs = json["outputs"].as_array().expect("outputs");
+        assert_eq!(outputs.len(), 1);
+        assert_eq!(outputs[0]["amount"], 0);
     }
 
     #[test]

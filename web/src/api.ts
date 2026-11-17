@@ -41,6 +41,7 @@ export interface Pot {
   payout_allowed: boolean;
   fee_quoted: boolean;
   quote_amount_sats: number | null;
+  change_sats: number;
 }
 
 export interface CreatePotInput {

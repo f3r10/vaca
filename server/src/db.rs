@@ -31,6 +31,15 @@ CREATE TABLE IF NOT EXISTS contributions (
     secret TEXT NOT NULL DEFAULT '',
     proof TEXT NOT NULL DEFAULT ''
 );
+
+-- NUT-08 change from a paid melt. `proof` is cashu proof JSON.
+-- The pot response sums `amount_sats` and does not load that JSON.
+CREATE TABLE IF NOT EXISTS change_proofs (
+    id TEXT PRIMARY KEY,
+    pot_id TEXT NOT NULL REFERENCES pots(id),
+    amount_sats INTEGER NOT NULL,
+    proof TEXT NOT NULL
+);
 ";
 
 pub struct StoredProof {
@@ -375,6 +384,37 @@ pub fn update_proof_for_pot(
     }
 }
 
+/// Marks the pot paid and stores change proofs, or stores neither.
+/// The mint payment is already done. This transaction only covers the two writes.
+/// `change` is `(amount_sats, proof json)`.
+pub fn finish_payout(
+    connection: &mut Connection,
+    pot_id: &str,
+    change: &[(u64, String)],
+) -> Result<(), ApiError> {
+    let tx = connection.transaction().map_err(db_err)?;
+    let changed = tx
+        .execute(
+            "UPDATE pots SET status = 'paid' WHERE id = ?1 AND status = 'open'",
+            params![pot_id],
+        )
+        .map_err(db_err)?;
+    if changed != 1 {
+        return Err(ApiError::Database);
+    }
+    for (amount_sats, proof) in change {
+        let id = uuid::Uuid::new_v4().to_string();
+        let amount = i64::try_from(*amount_sats).map_err(|_| ApiError::Database)?;
+        tx.execute(
+            "INSERT INTO change_proofs (id, pot_id, amount_sats, proof) VALUES (?1, ?2, ?3, ?4)",
+            params![id, pot_id, amount, proof],
+        )
+        .map_err(db_err)?;
+    }
+    tx.commit().map_err(db_err)?;
+    Ok(())
+}
+
 /// Moves an open pot to `paid`. A second call changes nothing and returns an error.
 pub fn mark_pot_paid(connection: &Connection, id: &str) -> Result<(), ApiError> {
     let changed = connection
@@ -430,7 +470,8 @@ SELECT
     p.created_at_unix,
     (SELECT COUNT(*) FROM contributions c WHERE c.pot_id = p.id) AS contribution_count,
     (SELECT COALESCE(SUM(amount_sats), 0) FROM contributions c WHERE c.pot_id = p.id) AS locked_sats,
-    p.mint_url
+    p.mint_url,
+    (SELECT COALESCE(SUM(amount_sats), 0) FROM change_proofs ch WHERE ch.pot_id = p.id) AS change_sats
 FROM pots p
 ";
 
@@ -468,6 +509,16 @@ fn map_pot(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoredPot> {
             })?
         },
         mint_url: row.get::<_, Option<String>>(11)?.unwrap_or_default(),
+        change_sats: {
+            let change: i64 = row.get(12)?;
+            u64::try_from(change).map_err(|err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    12,
+                    rusqlite::types::Type::Integer,
+                    Box::new(err),
+                )
+            })?
+        },
     })
 }
 
@@ -726,6 +777,46 @@ mod tests {
         assert_eq!(after.status, "paid");
         assert_eq!(after.locked_sats, 0);
         assert!(mark_pot_paid(&connection, "pot-1").is_err());
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn finish_payout_stores_change_with_the_paid_row() {
+        let path =
+            std::env::temp_dir().join(format!("vaca-db-change-{}.sqlite", uuid::Uuid::new_v4()));
+        let mut connection = open(&path).expect("open");
+        let pot = crate::pot::NewPot {
+            title: "Cause".to_string(),
+            kind: "cause".to_string(),
+            target_sats: 1_000,
+            deadline_unix: 1_800_000_000,
+            destination: "lno1qq".to_string(),
+            organizer_pubkey: None,
+        };
+        insert_pot(
+            &connection,
+            "pot-1",
+            &pot,
+            "http://127.0.0.1:9",
+            1_700_000_000,
+        )
+        .expect("pot");
+        finish_payout(&mut connection, "pot-1", &[(1, "change-row".to_string())]).expect("paid");
+        let stored = get_pot(&connection, "pot-1").unwrap().unwrap();
+        assert_eq!(stored.status, "paid");
+        assert_eq!(stored.change_sats, 1);
+        let (count, total): (i64, i64) = connection
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(amount_sats), 0) FROM change_proofs WHERE pot_id = ?1",
+                ["pot-1"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(total, 1);
+        assert!(finish_payout(&mut connection, "pot-1", &[(1, "again".to_string())]).is_err());
+        let stored = get_pot(&connection, "pot-1").unwrap().unwrap();
+        assert_eq!(stored.change_sats, 1);
         let _ = std::fs::remove_file(&path);
     }
 }

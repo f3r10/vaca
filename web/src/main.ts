@@ -75,7 +75,7 @@ function trust(): HTMLElement {
       "v2, the pitch, is not built. The organizer and the server would both have to sign, and only toward the destination stored when the pot was created. v1 signatures are SIG_INPUTS. v2 signatures are SIG_ALL, so a signature is tied to one melt quote. Two people who both agree can still spend, including after the deadline.",
     ),
     paragraph(
-      "Unused melt fee reserve goes to the organizer. That is stated on the pot. Nothing here moves that reserve yet. The server stops co-signing at the advertised deadline. The mint lock time is that deadline plus 10 minutes. The hard cap is 100,000 sats.",
+      "Unused melt fee reserve goes to the organizer as change when the mint pays. The pot shows how many sats came back. A download of those proofs is not on the page yet. The server stops co-signing at the advertised deadline. The mint lock time is that deadline plus 10 minutes. The hard cap is 100,000 sats.",
     ),
   );
   return section;
@@ -350,6 +350,7 @@ function potCard(pot: Pot): HTMLElement {
     line("Mint lock time (deadline + grace)", formatUnix(pot.locktime_unix)),
     line("Grace", `${pot.grace_seconds} seconds`),
     line("Unused fee reserve", `goes to the ${pot.fee_reserve_recipient}`),
+    line("Change", `${pot.change_sats} sats`),
     line("v1 / v2 signature flags", `${pot.sigflag_v1} / ${pot.sigflag_v2}`),
     line("Organizer pubkey", pot.organizer_pubkey ?? "not set"),
     paragraph("Destination, stored as text. Nothing has been paid."),

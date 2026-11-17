@@ -60,6 +60,8 @@ pub struct PotView {
     pub payout_allowed: bool,
     pub fee_quoted: bool,
     pub quote_amount_sats: Option<u64>,
+    /// Sum of stored NUT-08 change. The proof JSON is not on this view.
+    pub change_sats: u64,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,6 +78,7 @@ pub struct StoredPot {
     pub created_at_unix: i64,
     pub contribution_count: i64,
     pub locked_sats: u64,
+    pub change_sats: u64,
 }
 
 impl StoredPot {
@@ -156,6 +159,7 @@ impl StoredPot {
                 payout_allowed,
                 fee_quoted: fee_quoted,
                 quote_amount_sats: quote_amount_sats,
+                change_sats: self.change_sats,
             },
             ceiling,
         )
@@ -284,6 +288,7 @@ mod tests {
             created_at_unix: NOW,
             contribution_count: 0,
             locked_sats: 0,
+            change_sats: 0,
         };
 
         let melt_quoted_lookup = mint::MeltQuoteLookup::Quoted(mint::MeltQuote {
@@ -302,6 +307,7 @@ mod tests {
         assert_eq!(view.fee_reserve_sats, Some(1));
         assert_eq!(view.payout_allowed, false);
         assert_eq!(view.mint_url, "");
+        assert_eq!(view.change_sats, 0);
     }
 
     #[test]

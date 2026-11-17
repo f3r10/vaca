@@ -80,7 +80,7 @@ struct Health {
     server_key_file_present: bool,
     /// The public key from the environment. The key file is not read.
     server_pubkey_set: bool,
-    /// A checked proof is stored. Signing, melt, and refund are not.
+    /// A checked proof is stored. Refunds are not implemented.
     counts_contributions: bool,
     cdk_rev: &'static str,
     cdk_linked: bool,
@@ -544,7 +544,19 @@ async fn payout(
         &parsed_proofs,
     )
     .await?;
-    with_db(&state, |connection| db::mark_pot_paid(connection, &pot.id))?;
+    let change_rows = paid
+        .change
+        .iter()
+        .map(|proof| {
+            let amount: u64 = proof.amount.into();
+            let proof_json = serde_json::to_string(proof)
+                .map_err(|_| ApiError::BadRequest(mint::UNPAID.to_string()))?;
+            Ok((amount, proof_json))
+        })
+        .collect::<Result<Vec<_>, ApiError>>()?;
+    with_db_mut(&state, |connection| {
+        db::finish_payout(connection, &pot.id, &change_rows)
+    })?;
     let stored = require_pot(&state, &id)?;
     let (view, _) = stored.view(&mint::MeltQuoteLookup::Quoted(mint::MeltQuote {
         amount_sats: paid.amount_sats,
@@ -1221,9 +1233,12 @@ mod tests {
         assert_eq!(body["status"], "paid");
         assert_eq!(body["payout_allowed"], false);
         assert_eq!(body["fee_reserve_sats"], 1);
+        assert_eq!(body["change_sats"], 1);
         assert!(body.get("signatures").is_none());
         assert!(body.get("secret").is_none());
+        assert!(body.get("proof").is_none());
         assert_eq!(signature_count(&path, &id), 1);
+        assert_eq!(stored_change(&path, &id), (1, 1));
         assert_eq!(melts.load(Ordering::SeqCst), 1);
         let stored = fetch_pot(&app, &id).await;
         assert_eq!(stored["status"], "paid");
@@ -1241,7 +1256,9 @@ mod tests {
         let again_body = json_body(again).await;
         assert_eq!(again_body["status"], "paid");
         assert_eq!(again_body["payout_allowed"], false);
+        assert_eq!(again_body["change_sats"], 1);
         assert_eq!(signature_count(&path, &id), 1);
+        assert_eq!(stored_change(&path, &id), (1, 1));
         assert_eq!(melts.load(Ordering::SeqCst), 1);
 
         let extra_secret = v1_secret_nonce(&server, &refund, locktime, "after-paid");
@@ -1391,6 +1408,8 @@ mod tests {
         let stored = fetch_pot(&app, &id).await;
         assert_eq!(stored["status"], "open");
         assert_eq!(stored["payout_allowed"], true);
+        assert_eq!(stored["change_sats"], 0);
+        assert_eq!(stored_change(&path, &id), (0, 0));
 
         let again = app
             .clone()
@@ -1405,6 +1424,17 @@ mod tests {
         assert_eq!(melts.load(Ordering::SeqCst), 2);
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(&key_path);
+    }
+
+    fn stored_change(path: &std::path::Path, pot_id: &str) -> (i64, i64) {
+        let connection = rusqlite::Connection::open(path).unwrap();
+        connection
+            .query_row(
+                "SELECT COUNT(*), COALESCE(SUM(amount_sats), 0) FROM change_proofs WHERE pot_id = ?1",
+                [pot_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap()
     }
 
     fn signature_count(path: &std::path::Path, pot_id: &str) -> usize {

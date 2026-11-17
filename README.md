@@ -180,6 +180,17 @@ curl -sS http://127.0.0.1:8085/v1/mint/quote/bolt11/$quote_id
 
 The quote object should show `amount` 100, `amount_paid` 100, `amount_issued` 0, and `state` `PAID`.
 
+## Dev: mint a test token
+
+A pot on this regtest mint needs a token from that mint. A normal wallet cannot mint one. `scripts/mint-test-token.mjs` asks the mint for a bolt11 quote, prints the invoice, and waits. Pay that invoice from lab node A with `./scripts/cli a bolt11-send`, from `~/projects/ldk-lab`, while the script is still running. When the quote is `PAID`, the script writes an unlocked token. It prints the amount and the path. It does not print the token.
+
+```fish
+cd ~/projects/vaca
+node scripts/mint-test-token.mjs 100 ~/Downloads/vaca-test-token.cashu
+```
+
+The amount defaults to 100 sats. The path defaults to `~/Downloads/vaca-test-token.cashu`. `VACA_MINT_URL` defaults to `http://127.0.0.1:8085`. The file is mode 600. The script refuses to replace a file that already exists.
+
 ## Later: page layout
 
 The page works as a sequence of controls, and it is hard to use. This pass is

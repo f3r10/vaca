@@ -97,28 +97,33 @@
     font-size: var(--text-sm); margin-top: calc(var(--space-2) * -1);
   }
 
-  /* ---------- Variant 2: picture first ---------- */
-  .churn-layout { display: grid; grid-template-columns: 6rem 1fr; gap: var(--space-4); align-items: start; }
+  /* ---------- Churn and the target-reached moment ---------- */
   .churn { width: 100%; height: auto; display: block; }
-  .churn-lid, .churn-neck, .churn-body { fill: var(--color-bg-sunken); }
+  .churn-lid, .churn-neck, .churn-body, .churn-foot { fill: var(--color-bg-sunken); }
+  .churn-handle { fill: none; stroke: var(--color-border-strong); stroke-width: 3; stroke-linecap: round; }
   .churn-spot { fill: var(--color-border-strong); opacity: 0.55; }
   .churn-fill {
     --p: 0; fill: var(--color-accent-solid);
     transform-box: fill-box; transform-origin: 50% 100%; transform: scaleY(var(--p));
     transition: transform var(--duration-slow) var(--ease-out);
   }
+  .churn-shine { fill: oklch(1 0 0 / 0.28); transform: skewX(-12deg); animation: shine 1.4s var(--ease-out) 0.7s 1 both; }
   .churn-outline { fill: none; stroke: var(--color-border-strong); stroke-width: 1.5; }
-  .churn-target { stroke: var(--color-text); stroke-width: 1.25; }
-  .hatch-bg { fill: transparent; }
-  .hatch-line { stroke: var(--color-border-strong); }
-  .churn-copy { display: grid; gap: var(--space-3); min-width: 0; }
-  .churn-amount { font-size: var(--text-lg); line-height: 1.3; }
-  .churn-amount strong { font-family: var(--font-display); font-size: var(--text-xl); font-variant-numeric: lining-nums tabular-nums; }
-  .churn-amount .muted { font-size: var(--text-sm); display: block; }
+  .logo-body { fill: var(--color-bg-sunken); stroke: var(--color-border-strong); stroke-width: 3; }
+  .logo-spot { fill: var(--color-text); opacity: 0.8; }
 
-  @container pot (min-width: 32rem) {
-    .churn-layout { grid-template-columns: 9rem 1fr; gap: var(--space-5); }
+  .celebrate {
+    display: grid; grid-template-columns: 4rem 1fr; gap: var(--space-4); align-items: center;
+    padding: var(--space-4); border-radius: var(--radius-md);
+    background: var(--color-accent-soft); color: var(--color-accent-text);
   }
+  .celebrate strong { font-family: var(--font-display); font-size: var(--text-lg); }
+  .celebrate p { font-size: var(--text-sm); }
+  @keyframes shine { from { translate: 0 0; opacity: 1; } to { translate: 150px 0; opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .churn-shine { animation: none; opacity: 0; } }
+
+  .notice-danger { background: var(--color-danger-soft); color: var(--color-danger-text); }
+
   @container pot (max-width: 21rem) {
     .fact { grid-template-columns: 1fr; gap: 0; }
   }

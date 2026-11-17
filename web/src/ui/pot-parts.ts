@@ -55,10 +55,6 @@ export function graceNote(pot: Pot): HTMLElement {
   return h("p", { class: "notice notice-wait" }, t.graceNote(formatTime(pot.locktime_unix)));
 }
 
-export function destinationNotice(): HTMLElement {
-  return h("p", { class: "notice notice-warning", role: "note" }, t.notLightningHelp);
-}
-
 export function copyButton(value: string, what: string): HTMLButtonElement {
   const btn = h("button", { type: "button", class: "btn-quiet", "aria-label": `Copy ${what}` }, t.copy);
   btn.addEventListener("click", () => {

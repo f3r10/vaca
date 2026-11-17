@@ -6,6 +6,27 @@ This repository stores pots. `POST /api/pots/{id}/contributions` checks each pro
 
 Regtest or Mutinynet only. The hard cap is 100,000 sats per pot.
 
+## How Vaca uses NUT-11
+
+Vaca does not implement NUT-11. The mint does: `cdk-mintd` advertises NUT-11 and enforces it when a proof is spent. Vaca builds the locks and checks them.
+
+**The lock.** Each contribution is a P2PK secret with:
+
+- `data`: the pot key. In v1 that is the server's public key. This is the payout path.
+- `locktime`: the advertised deadline plus 600 seconds.
+- `refund`: the contributor's public key. The page's "Create refund key" button generates the key pair in the browser and downloads it as a file. The private key never goes to the server.
+
+`createSecret` in `web/src/lock.ts` builds the secret with cashu-ts `createP2PKsecret`, parses it back, and checks each field. The contributor's wallet swaps ordinary proofs into proofs that carry this lock, so the mint signs locked proofs. On regtest that swap is `web/src/mint-pod-check.ts`, which calls cashu-ts `wallet.send` with lock options (`mainKeys`, `refundKeys`, `locktime`) rather than `createSecret`. The page does not do the swap yet.
+
+**The check before counting.** The mint does not know what a pot is. It only checks keys and time. So `secret_matches_pot` in `server/src/lock.rs` accepts a proof only when the kind is P2PK, `data` is the pot key, and there are exactly two tags: the pot's locktime and one refund key. 02 and 03 keys with the same x-coordinate count as the same key. The contributions route then asks the mint that the proof is signed and unspent (NUT-07) before it adds the amount.
+
+**Spending.**
+
+- Payout: once the fee gate is open and before the advertised deadline, the server signs each stored proof with the pot key (`sign_p2pk` in `server/src/http.rs`, SIG_INPUTS, one signature per proof). The melt to the Lightning destination is not written yet.
+- Refund: after the lock time, the mint accepts a signature from the contributor's refund key. The mint enforces this, so refunds do not need the server. The refund route in this repository still returns 501.
+
+The limits are in the trust model below: after the lock time both paths are valid, and in v1 the server key alone can spend.
+
 ## Trust model
 
 v1, the first version that moves sats: the server key is the only pot key (`n_sigs = 1`). The server can spend the locked ecash by itself. That is custodial for theft. Refunds still work when the server is gone, because the mint accepts the contributor's refund key after the lock time. The server key for that version stays in a file outside this repo, mode 600. Payout reads that file only after the fee gate is open and the advertised deadline has not passed. It does not log the path or the private key. Health still reports only whether the path is set and whether a file is there.

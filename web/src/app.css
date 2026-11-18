@@ -47,7 +47,7 @@
   .panel { display: grid; gap: var(--space-4); padding: var(--space-5); background: var(--color-bg-surface); border: 1px solid var(--color-border); border-radius: var(--radius-lg); }
   .panel:focus { outline: none; }
   .panel:focus-visible { outline: 3px solid var(--color-focus); }
-  .steps { display: grid; gap: var(--space-5); list-style: none; counter-reset: s; }
+  .steps { display: grid; gap: var(--space-5); list-style: none; padding: 0; margin: 0; }
   .step { display: grid; gap: var(--space-3); }
   .step h3 { display: flex; align-items: center; gap: var(--space-3); font-size: var(--text-lg); }
   .step-n { flex: none; display: inline-grid; place-items: center; width: 1.75rem; height: 1.75rem; border-radius: var(--radius-pill); background: var(--color-accent-soft); color: var(--color-accent-text); font-family: var(--font-body); font-size: var(--text-sm); font-weight: 700; }
@@ -55,6 +55,24 @@
   .step[data-locked="true"] :is(input, textarea, button, summary) { opacity: 0.55; }
   .step-body .btn-quiet { justify-self: start; }
   .panel-done .steps { display: none; }
+
+  /* ---- paying: amount, fee summary, invoice ---- */
+  .pay-form { display: grid; gap: var(--space-4); }
+  .methods { margin-bottom: var(--space-4); }
+  .presets { display: flex; flex-wrap: wrap; gap: var(--space-2); }
+  .chip-btn {
+    min-height: 2.75rem; padding: 0 var(--space-4);
+    border: 1px solid var(--color-border-strong); border-radius: var(--radius-pill);
+    background: var(--color-bg-surface); color: var(--color-text);
+    font-size: var(--text-sm); font-weight: 600; cursor: pointer;
+  }
+  .chip-btn:active { transform: scale(0.97); }
+  .summary { font-size: var(--text-sm); font-weight: 600; min-height: 1.5em; }
+  .progress { font-size: var(--text-sm); color: var(--color-text-secondary); min-height: 1.5em; }
+  .progress:empty { display: none; }
+  .invoice { display: grid; gap: var(--space-3); padding: var(--space-4); border: 1px solid var(--color-border-strong); border-radius: var(--radius-md); background: var(--color-bg-sunken); }
+  .invoice h4 { font-family: var(--font-body); font-size: var(--text-base); font-weight: 700; }
+  .invoice-text { padding: var(--space-3); border-radius: var(--radius-sm); background: var(--color-bg-surface); }
   .key-result { display: grid; gap: var(--space-2); justify-items: start; }
   .key-pub { padding: var(--space-3); background: var(--color-bg-sunken); border-radius: var(--radius-sm); width: 100%; }
   .check { display: flex; align-items: flex-start; gap: var(--space-3); min-height: 2.75rem; font-weight: 600; cursor: pointer; }

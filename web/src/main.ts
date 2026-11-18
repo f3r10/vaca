@@ -20,11 +20,22 @@ const nav = h("nav", { class: "nav", "aria-label": "Main" },
   h("a", { href: "#/", "data-route": "home" }, s.nav.home),
   h("a", { href: "#/how", "data-route": "how" }, s.nav.how),
   h("a", { class: "nav-cta", href: "#/new", "data-route": "new" }, s.nav.create));
+// The public deploy sets VITE_PUBLIC_DEMO=1. Local runs against a regtest mint do not show this.
+const demoBanner =
+  import.meta.env.VITE_PUBLIC_DEMO === "1"
+    ? h("aside", { class: "demo-banner", "aria-label": s.demo.label },
+        h("span", { class: "demo-banner-icon", "aria-hidden": "true" }, "!"),
+        h("p", {}, `${s.demo.text} `, h("a", { href: "#/how" }, s.demo.link)))
+    : null;
+
 mount.append(
   h("a", { class: "skip", href: "#main" }, "Skip to content"),
+  ...(demoBanner ? [demoBanner] : []),
   h("header", { class: "site-header" }, h("a", { class: "brand", href: "#/" }, logoMark(26), "Vaca"), nav),
   main,
-  h("footer", { class: "site-footer" }, h("p", { role: "note" }, s.banner)),
+  h("footer", { class: "site-footer" },
+    h("p", { role: "note" }, s.banner),
+    h("p", {}, h("a", { href: s.github.url, target: "_blank", rel: "noopener noreferrer" }, s.github.label))),
 );
 
 let disposeView: (() => void) | null = null;

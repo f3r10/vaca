@@ -3,6 +3,7 @@ import { friendly } from "../errors";
 import { formatSats } from "../format";
 import { privkeyFromRefundFile, pubkeyFromRefundFile, refundKeyMatches } from "../refund-key";
 import { RefundSwapError, readRefundProofs, refundSats, refundToken, swapRefundProofs } from "../refund-swap";
+import { t } from "../strings";
 import { h } from "./dom";
 import { downloadText } from "./files";
 
@@ -15,6 +16,7 @@ export function refundPanel(getPot: () => Pot, onReclaimed: (sats: number) => vo
   let saved: { filename: string; contents: string } | null = null;
 
   const keyFile = h("input", { type: "file", id: "reclaim-key-file", accept: ".txt,text/plain" }) as HTMLInputElement;
+  const keyField = h("div", { class: "field" }, h("label", { for: "reclaim-key-file" }, "Your refund key file"), keyFile);
   const go = h("button", { type: "button", class: "btn btn-primary" }, "Reclaim sats");
   const again = h("button", { type: "button", class: "btn" }, "Download the token again");
   again.hidden = true;
@@ -49,7 +51,10 @@ export function refundPanel(getPot: () => Pot, onReclaimed: (sats: number) => vo
         downloadText(saved.filename, saved.contents);
         again.hidden = false;
         const sats = refundSats(fresh);
-        say(`You reclaimed ${formatSats(sats)}. The token downloaded as a file. Import it into a Cashu wallet to spend it.`, "success");
+        say(t.reclaimed(formatSats(sats)), "success");
+        // Done: nothing more to reclaim, so only the download stays.
+        keyField.hidden = true;
+        go.hidden = true;
         onReclaimed(sats);
       } catch (err) {
         say(err instanceof RefundSwapError ? err.message : friendly(err), "danger");
@@ -67,7 +72,7 @@ export function refundPanel(getPot: () => Pot, onReclaimed: (sats: number) => vo
     h("h2", { id: "reclaim-title" }, "Reclaim your sats"),
     h("p", {}, "The pot ended without paying out, so each contributor can take their own sats back. Choose the refund key file you saved when you contributed."),
     h("p", { class: "fine" }, "Do this soon. After the lock time the pot's key can spend too, and the mint accepts whichever valid spend arrives first."),
-    h("div", { class: "field" }, h("label", { for: "reclaim-key-file" }, "Your refund key file"), keyFile),
+    keyField,
     go,
     again,
     status,

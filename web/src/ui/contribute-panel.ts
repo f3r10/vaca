@@ -1,7 +1,6 @@
 import type { Proof } from "@cashu/cashu-ts";
 import { postContribution, type Pot } from "../api";
 import {
-  ContributeError,
   assertPotCanTakeProofs,
   classifyProofs,
   contributionAmount,
@@ -241,20 +240,21 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
           throw err;
         }
         onPot(pot);
+        if (pot.sats_still_needed === 0) root.classList.add("panel-done");
         tokenText.value = "";
         tokenFile.value = "";
         keyFile.value = "";
         const counted = posting.reduce((sum, p) => sum + p.amount, 0);
         if (swapped && swapped.keep.length > 0) {
           remember(mintUrl, "", null, [], swapped.keep);
-          say(`Locked ${formatSats(counted)} and the pot counted them. The rest of your token downloaded as a file. Keep it: those sats are yours.`, "success");
+          say(`Locked ${formatSats(counted)} and the pot counted them. Your browser is saving the rest of your token as a file. Keep it: those sats are yours.`, "success");
         } else {
           say(`Locked ${formatSats(counted)} and the pot counted them. Keep your refund key file until the pot ends.`, "success");
         }
       } catch (err) {
         if (swapped && pending === null) remember(mintUrl, "", null, swapped.send, swapped.keep);
-        const msg = err instanceof ContributeError ? err.message : friendly(err);
-        say(pending ? `${msg} Your locked proofs downloaded as a file. You can post them again without another swap.` : msg, "error");
+        const msg = friendly(err);
+        say(pending ? `${msg} Your browser is saving your locked proofs as a file. You can post them again without another swap.` : msg, "error");
       } finally {
         setBusy(false);
       }
@@ -282,7 +282,7 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
   });
 
   refreshFields();
-  return h(
+  const root = h(
     "section",
     { class: "panel", id: "contribute", "aria-labelledby": "contribute-title", tabindex: "-1" },
     h("h2", { id: "contribute-title" }, "Contribute"),
@@ -290,4 +290,5 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
     status,
     downloads,
   );
+  return root;
 }

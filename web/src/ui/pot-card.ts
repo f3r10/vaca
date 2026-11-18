@@ -19,6 +19,8 @@ export interface PotCardOptions {
   problem?: Problem;
   /** Set after this contributor reclaimed. A result of their action, not a pot status. */
   reclaimedSats?: number;
+  /** Show the reclaim result on the card. The live page shows it once, in the reclaim panel. */
+  reclaimNotice?: boolean;
   /** Fraction of the scale the bar starts from, so a new contribution visibly fills in. */
   fromFraction?: number;
 }
@@ -39,7 +41,7 @@ function button(label: string, primary: boolean, o: PotCardOptions, act: CardAct
 }
 
 /** Static text. Live announcements come from the persistent status regions in the panels. */
-function notice(tone: "wait" | "warning" | "danger", text: string): HTMLElement {
+function notice(tone: "wait" | "warning" | "danger" | "success", text: string): HTMLElement {
   return h("p", { class: `notice notice-${tone}` }, text);
 }
 
@@ -55,6 +57,7 @@ function action(pot: Pot, now: number, o: PotCardOptions): HTMLElement | null {
   if (o.problem === "mint-unreachable") return button(t.problem.retry, true, o, "retry");
   if (!destinationOk(pot)) return button(t.cta.contribute, false, o, "contribute", true);
   if (phase.funding === "ready") return button(t.cta.payout, true, o, "payout");
+  if (pot.sats_still_needed === 0) return null; // nothing more can be added
   return button(t.cta.contribute, true, o, "contribute");
 }
 
@@ -93,9 +96,10 @@ export function potCard(pot: Pot, now: number, o: PotCardOptions = {}): HTMLElem
 
   const outcome: (HTMLElement | null)[] = [];
   if (phase.phase === "paid") {
-    outcome.push(notice("wait", t.paid(formatSats(pot.quote_amount_sats ?? pot.target_sats), kindName)));
+    outcome.push(notice("success", t.paid(formatSats(pot.quote_amount_sats ?? pot.target_sats), kindName)));
   }
-  if (o.reclaimedSats !== undefined) outcome.push(notice("wait", t.reclaimed(formatSats(o.reclaimedSats))));
+  if (o.reclaimedSats !== undefined && o.reclaimNotice) outcome.push(notice("success", t.reclaimed(formatSats(o.reclaimedSats))));
+  if (phase.phase === "open" && phase.funding === "awaiting-fee") outcome.push(notice("wait", t.waitingForQuote));
   if (o.problem === "mint-unreachable") outcome.push(notice("danger", t.problem.mintUnreachable(hostOf(pot.mint_url))));
   if (o.problem === "quote-expired") outcome.push(notice("warning", t.problem.quoteExpired));
   if (!destinationOk(pot)) outcome.push(notice("warning", t.problem.noPayout));

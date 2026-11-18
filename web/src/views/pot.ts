@@ -44,17 +44,22 @@ export function potView(initial: Pot): PotView {
   function wantedPanel(): string {
     const p = potPhase(pot, now());
     if (p.phase === "refundable") return "refund";
-    if (p.phase === "open") return destinationOk(pot) ? "contribute" : "closed";
+    if (p.phase === "open") {
+      if (!destinationOk(pot)) return "closed";
+      return pot.sats_still_needed > 0 ? "contribute" : "full";
+    }
     return "closed";
   }
 
   function renderPanels(): void {
     const want = wantedPanel();
     if (want === panelKind) return; // keep in-progress input and retry state
+    // A full pot keeps the contribute panel, so the result and downloads stay on screen.
+    if (panelKind === "contribute" && want === "full") return;
     panelKind = want;
     if (want === "contribute") panelHost.replaceChildren(contributePanel(() => pot, update));
     else if (want === "refund") panelHost.replaceChildren(refundPanel(() => pot, (sats) => { reclaimedSats = sats; renderCard(); }));
-    else panelHost.replaceChildren(h("p", { class: "notice notice-wait" }, app.pot.closed));
+    else panelHost.replaceChildren(h("p", { class: "notice notice-wait" }, want === "full" ? app.pot.full : app.pot.closed));
   }
 
   function update(next: Pot): void {

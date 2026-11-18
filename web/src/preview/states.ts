@@ -40,7 +40,7 @@ const GROUPS: { group: string; items: Scenario[] }[] = [
     group: "Outcome",
     items: [
       { id: "paid", label: "Paid", pot: "paid", preview: "The server can pay out, but no demo pot has reached this yet." },
-      { id: "refunded", label: "Refunded (your result)", pot: "refundable", options: { reclaimedSats: 1_200 }, preview: "A contributor's own result after reclaiming. Not a pot status." },
+      { id: "refunded", label: "Refunded (your result)", pot: "refundable", options: { reclaimedSats: 1_200, reclaimNotice: true }, preview: "A contributor's own result after reclaiming. Not a pot status." },
     ],
   },
   {

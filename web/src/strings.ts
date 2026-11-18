@@ -32,8 +32,9 @@ export const en = {
     noPayout: "This pot's destination isn't a Lightning invoice or offer, so it can't pay out. It can only end in refunds, so contributing is turned off.",
   },
   celebrate: { title: "Target reached", body: "The pot covers the target, the fee reserve, and the mint's input fee. It can pay out now." },
+  waitingForQuote: "The pot holds its target. It can pay out once the mint gives a fee quote.",
   paid: (sats: string, kind: string) => `Paid ${sats} to the ${kind}. The mint confirmed it.`,
-  reclaimed: (sats: string) => `You reclaimed ${sats}. The token file is downloaded. Import it into a wallet to spend it.`,
+  reclaimed: (sats: string) => `You reclaimed ${sats}. Your browser is saving the token file. If it doesn't appear, use "Download the token again", then import it into a wallet to spend it.`,
   copy: "Copy",
   copied: "Copied",
   cta: {
@@ -70,6 +71,14 @@ export const serverErrors: [string, string][] = [
   ["The pot store failed.", "The server hit a problem saving this. Try again."],
 ];
 
+/** Wallet-library messages turned into plain copy. */
+export const walletErrors: [RegExp, (m: RegExpMatchArray) => string][] = [
+  [
+    /Not enough funds available to send: (\d+) available, (\d+) required/i,
+    (m) => `Your token holds ${m[1]} sats, but locking needs ${m[2]} once the mint's fee is included. Use a token with a few more sats.`,
+  ],
+];
+
 export const app = {
   nav: { home: "Pots", how: "How it works", create: "Create a pot" },
   banner: "Experimental. Regtest only: use test money, never real funds.",
@@ -99,6 +108,7 @@ export const app = {
     ],
     trustLink: "Read how it works",
     closed: "Contributions are closed for this pot.",
+    full: "This pot has everything it needs, so nothing more can be added.",
   },
 } as const;
 

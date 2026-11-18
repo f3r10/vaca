@@ -1,0 +1,132 @@
+/* Vaca design tokens. Primitives name a value, semantic tokens name a job.
+   Components use only the semantic tier. One switching mechanism:
+   color-scheme + light-dark(). [data-theme] forces one side for previews. */
+
+@layer tokens, base, components, utilities;
+
+@font-face {
+  font-family: "Fraunces";
+  src: url("./fonts/fraunces-latin-opsz-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Inter";
+  src: url("./fonts/inter-latin-wght-normal.woff2") format("woff2");
+  font-weight: 100 900;
+  font-display: swap;
+}
+
+@layer tokens {
+  :root {
+    color-scheme: light dark;
+
+    /* Primitives. Hue 85 is the cream neutral, 155 the pasture-green accent,
+       27 the danger red, 75 the amber warning. Each ramp holds one hue. */
+    --neutral-50: oklch(0.985 0.006 85);
+    --neutral-100: oklch(0.965 0.012 85);
+    --neutral-200: oklch(0.935 0.016 85);
+    --neutral-300: oklch(0.885 0.02 85);
+    --neutral-500: oklch(0.62 0.025 80);
+    --neutral-600: oklch(0.48 0.027 75);
+    --neutral-900: oklch(0.25 0.02 70);
+
+    --neutral-d-50: oklch(0.96 0.01 85);
+    --neutral-d-300: oklch(0.78 0.02 80);
+    --neutral-d-500: oklch(0.6 0.02 75);
+    --neutral-d-700: oklch(0.38 0.015 70);
+    --neutral-d-800: oklch(0.3 0.013 70);
+    --neutral-d-850: oklch(0.255 0.012 70);
+    --neutral-d-900: oklch(0.215 0.01 70);
+
+    --green-100: oklch(0.93 0.045 155);
+    --green-700: oklch(0.42 0.095 155);
+    --green-800: oklch(0.35 0.08 155);
+    --green-d-300: oklch(0.8 0.11 155);
+    --green-d-400: oklch(0.72 0.115 155);
+    --green-d-900: oklch(0.3 0.06 155);
+
+    --red-100: oklch(0.94 0.03 27);
+    --red-700: oklch(0.47 0.155 27);
+    --red-d-300: oklch(0.8 0.11 27);
+    --red-d-900: oklch(0.3 0.07 27);
+
+    --amber-100: oklch(0.95 0.045 85);
+    --amber-700: oklch(0.46 0.09 70);
+    --amber-d-300: oklch(0.84 0.11 85);
+    --amber-d-900: oklch(0.31 0.06 75);
+
+    /* Semantic colour */
+    --color-bg: light-dark(var(--neutral-100), var(--neutral-d-900));
+    --color-bg-surface: light-dark(var(--neutral-50), var(--neutral-d-850));
+    --color-bg-sunken: light-dark(var(--neutral-200), var(--neutral-d-800));
+    --color-border: light-dark(var(--neutral-300), var(--neutral-d-700));
+    --color-border-strong: light-dark(var(--neutral-500), var(--neutral-d-500));
+    --color-text: light-dark(var(--neutral-900), var(--neutral-d-50));
+    --color-text-secondary: light-dark(var(--neutral-600), var(--neutral-d-300));
+
+    --color-accent-solid: light-dark(var(--green-700), var(--green-d-400));
+    --color-accent-solid-text: light-dark(var(--neutral-50), var(--neutral-d-900));
+    --color-accent-soft: light-dark(var(--green-100), var(--green-d-900));
+    --color-accent-text: light-dark(var(--green-800), var(--green-d-300));
+
+    --color-danger-soft: light-dark(var(--red-100), var(--red-d-900));
+    --color-danger-text: light-dark(var(--red-700), var(--red-d-300));
+    --color-warning-soft: light-dark(var(--amber-100), var(--amber-d-900));
+    --color-warning-text: light-dark(var(--amber-700), var(--amber-d-300));
+
+    --color-focus: light-dark(var(--green-700), var(--green-d-300));
+
+    /* Type */
+    --font-display: "Fraunces", "Iowan Old Style", Palatino, Georgia, serif;
+    --font-body: "Inter", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+    /* Minor third (1.2) from a 1rem body. Hero uses clamp for a phone-first fit. */
+    --text-xs: 0.8125rem;
+    --text-sm: 0.9375rem;
+    --text-base: 1rem;
+    --text-lg: 1.25rem;
+    --text-xl: 1.5rem;
+    --text-2xl: clamp(1.75rem, 1.4rem + 1.6vw, 2.25rem);
+    --text-hero: clamp(2.25rem, 1.6rem + 3vw, 3.5rem);
+
+    --leading-body: 1.55;
+    --leading-tight: 1.15;
+
+    /* Space: 4px base */
+    --space-1: 0.25rem;
+    --space-2: 0.5rem;
+    --space-3: 0.75rem;
+    --space-4: 1rem;
+    --space-5: 1.5rem;
+    --space-6: 2rem;
+    --space-7: 3rem;
+    --space-8: 4.5rem;
+
+    --radius-sm: 0.5rem;
+    --radius-md: 0.875rem;
+    --radius-lg: 1.375rem;
+    --radius-pill: 999px;
+
+    --shadow-card: 0 1px 0 oklch(0 0 0 / 0.04), 0 8px 24px -12px oklch(0.3 0.04 70 / 0.18);
+
+    /* Motion */
+    --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+    --duration-fast: 140ms;
+    --duration-base: 260ms;
+    --duration-slow: 700ms;
+  }
+
+  :root[data-theme="light"] { color-scheme: light; }
+  :root[data-theme="dark"] { color-scheme: dark; }
+
+  @media (prefers-reduced-motion: reduce) {
+    :root {
+      --duration-fast: 0ms;
+      --duration-base: 0ms;
+      --duration-slow: 0ms;
+    }
+  }
+}

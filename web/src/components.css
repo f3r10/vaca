@@ -1,0 +1,130 @@
+@layer components {
+  /* ---------- Buttons ---------- */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
+    min-height: 3rem; padding: 0 var(--space-5);
+    border: 1px solid var(--color-border-strong); border-radius: var(--radius-pill);
+    background: transparent; color: var(--color-text);
+    font-weight: 600; text-decoration: none; cursor: pointer;
+    transition: transform var(--duration-fast) var(--ease-out), background-color var(--duration-fast);
+  }
+  .btn:active { transform: scale(0.98); }
+  .btn-primary {
+    background: var(--color-accent-solid); color: var(--color-accent-solid-text);
+    border-color: transparent;
+  }
+  .btn-quiet {
+    min-height: 2.75rem; min-width: 2.75rem; padding: 0 var(--space-3);
+    border: 0; background: transparent; color: var(--color-accent-text);
+    font-size: var(--text-sm); font-weight: 600; cursor: pointer; border-radius: var(--radius-sm);
+  }
+  .btn[disabled] { opacity: 0.55; cursor: not-allowed; }
+
+  /* ---------- Pot card shell ---------- */
+  .pot {
+    display: grid; gap: var(--space-4);
+    padding: var(--space-5);
+    background: var(--color-bg-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    container: pot / inline-size;
+  }
+  .pot-meta { display: flex; flex-wrap: wrap; gap: var(--space-2); align-items: center; }
+  .pot-title { font-size: var(--text-2xl); }
+
+  .chip, .badge {
+    display: inline-flex; align-items: center; gap: 0.35em;
+    padding: 0.2rem 0.65rem; border-radius: var(--radius-pill);
+    font-size: var(--text-xs); font-weight: 600; line-height: 1.4;
+  }
+  .chip { background: var(--color-bg-sunken); color: var(--color-text-secondary); }
+  .badge-open { background: var(--color-bg-sunken); color: var(--color-text); }
+  .badge-go, .badge-done { background: var(--color-accent-soft); color: var(--color-accent-text); }
+  .badge-wait { background: var(--color-warning-soft); color: var(--color-warning-text); }
+  .badge-glyph { font-size: 0.9em; }
+
+  .notice {
+    padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
+    font-size: var(--text-sm);
+  }
+  .notice-wait, .notice-warning { background: var(--color-warning-soft); color: var(--color-warning-text); }
+
+  .deadline { display: grid; gap: 0.1rem; font-size: var(--text-sm); }
+  .deadline strong { font-size: var(--text-base); }
+
+  .fine { font-size: var(--text-xs); color: var(--color-text-secondary); max-width: 60ch; }
+
+  /* ---------- Facts ---------- */
+  .facts {
+    display: grid; gap: 0; border-top: 1px solid var(--color-border);
+  }
+  .fact {
+    display: grid; grid-template-columns: minmax(7rem, 9rem) 1fr; align-items: center;
+    gap: var(--space-3); padding: var(--space-2) 0; min-height: 2.75rem;
+    border-bottom: 1px solid var(--color-border); font-size: var(--text-sm);
+  }
+  .fact dt { color: var(--color-text-secondary); }
+  .fact dd { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: var(--space-2); min-width: 0; }
+  .fact dd > :first-child { min-width: 0; overflow-wrap: anywhere; }
+
+  /* ---------- Variant 1: numbers first ---------- */
+  .hero-amount { font-family: var(--font-display); line-height: 1; margin-top: var(--space-2); }
+  .hero-number {
+    font-size: var(--text-hero); font-weight: 600; font-variant-numeric: lining-nums tabular-nums;
+    letter-spacing: -0.02em;
+  }
+  .hero-unit { font-size: var(--text-lg); color: var(--color-text-secondary); font-family: var(--font-body); }
+
+  .meter-track {
+    position: relative; height: 0.875rem; border-radius: var(--radius-pill);
+    background: var(--color-bg-sunken); overflow: hidden;
+  }
+  .meter-fill {
+    --p: 0;
+    position: absolute; inset: 0; background: var(--color-accent-solid);
+    transform-origin: left center; transform: scaleX(var(--p));
+    transition: transform var(--duration-slow) var(--ease-out);
+  }
+  .meter-target { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--color-text); }
+  .meter-reserve {
+    position: absolute; top: 0; bottom: 0; right: 0;
+    background: repeating-linear-gradient(135deg, var(--color-border-strong) 0 2px, transparent 2px 6px);
+    min-width: 0.75rem;
+  }
+  .meter-caption {
+    display: flex; flex-wrap: wrap; justify-content: space-between; gap: var(--space-1) var(--space-4);
+    font-size: var(--text-sm); margin-top: calc(var(--space-2) * -1);
+  }
+
+  /* ---------- Churn and the target-reached moment ---------- */
+  .churn { width: 100%; height: auto; display: block; }
+  .churn-lid, .churn-neck, .churn-body, .churn-foot { fill: var(--color-bg-sunken); }
+  .churn-handle { fill: none; stroke: var(--color-border-strong); stroke-width: 3; stroke-linecap: round; }
+  .churn-spot { fill: var(--color-border-strong); opacity: 0.55; }
+  .churn-fill {
+    --p: 0; fill: var(--color-accent-solid);
+    transform-box: fill-box; transform-origin: 50% 100%; transform: scaleY(var(--p));
+    transition: transform var(--duration-slow) var(--ease-out);
+  }
+  .churn-shine { fill: oklch(1 0 0 / 0.28); transform: skewX(-12deg); animation: shine 1.4s var(--ease-out) 0.7s 1 both; }
+  .churn-outline { fill: none; stroke: var(--color-border-strong); stroke-width: 1.5; }
+  .logo-body { fill: var(--color-bg-sunken); stroke: var(--color-border-strong); stroke-width: 3; }
+  .logo-spot { fill: var(--color-text); opacity: 0.8; }
+
+  .celebrate {
+    display: grid; grid-template-columns: 4rem 1fr; gap: var(--space-4); align-items: center;
+    padding: var(--space-4); border-radius: var(--radius-md);
+    background: var(--color-accent-soft); color: var(--color-accent-text);
+  }
+  .celebrate strong { font-family: var(--font-display); font-size: var(--text-lg); }
+  .celebrate p { font-size: var(--text-sm); }
+  @keyframes shine { from { translate: 0 0; opacity: 1; } to { translate: 150px 0; opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .churn-shine { animation: none; opacity: 0; } }
+
+  .notice-danger { background: var(--color-danger-soft); color: var(--color-danger-text); }
+
+  @container pot (max-width: 21rem) {
+    .fact { grid-template-columns: 1fr; gap: 0; }
+  }
+}

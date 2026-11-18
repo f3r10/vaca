@@ -2,7 +2,7 @@
 
 Vaca is an experimental web app for all-or-nothing pots: a cause, a shared purchase, or splitting a bill. Contributors lock ecash toward a target before a deadline. If the target is met, the pot pays a Lightning destination that was committed when the pot was created. If the deadline passes first, each contributor reclaims their own sats, because the mint enforces a NUT-11 refund key. There is no smart contract.
 
-This repository stores pots. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. When the locked total covers the target plus the mint's fee reserve, and the advertised deadline has not passed, `POST /api/pots/{id}/payout` signs each stored proof and asks the mint to pay the destination. The pot becomes `paid` only when the mint says the payment is paid. A mint failure leaves the pot open. Unused fee reserve comes back as NUT-08 change and is stored for the organizer. A download of those proofs is later. After the mint lock time, `POST /api/pots/{id}/refunds` returns that contributor's proofs with no server signature. The page signs with the refund key and swaps them at the mint. The server does not spend them.
+This repository stores pots. The page locks a token to the pot and posts the proofs. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. When the locked total covers the target, the mint's Lightning fee reserve, and the input fee on the locked proofs, and the advertised deadline has not passed, `POST /api/pots/{id}/payout` signs each stored proof and asks the mint to pay the destination. The pot becomes `paid` only when the mint says the payment is paid. A mint failure leaves the pot open. Unused fee reserve comes back as NUT-08 change and is stored for the organizer. A download of those proofs is later. After the mint lock time, `POST /api/pots/{id}/refunds` returns that contributor's proofs with no server signature. The page signs with the refund key and swaps them at the mint. The server does not spend them.
 
 Regtest or Mutinynet only. The hard cap is 100,000 sats per pot.
 
@@ -16,7 +16,7 @@ Vaca does not implement NUT-11. The mint does: `cdk-mintd` advertises NUT-11 and
 - `locktime`: the advertised deadline plus 600 seconds.
 - `refund`: the contributor's public key. The page's "Create refund key" button generates the key pair in the browser and downloads it as a file. The private key never goes to the server.
 
-`createSecret` in `web/src/lock.ts` builds the secret with cashu-ts `createP2PKsecret`, parses it back, and checks each field. The contributor's wallet swaps ordinary proofs into proofs that carry this lock, so the mint signs locked proofs. On regtest that swap is `web/src/mint-pod-check.ts`, which calls cashu-ts `wallet.send` with lock options (`mainKeys`, `refundKeys`, `locktime`) rather than `createSecret`. The page does not do the swap yet.
+`createSecret` in `web/src/lock.ts` builds one secret with cashu-ts `createP2PKsecret`, parses it back, and checks each field. The page does not post that string. It asks the mint to swap the token, and the mint signs new proofs whose secrets carry the same lock. `lockForPot` in `web/src/contribute.ts` calls `wallet.ops.send` with `mainKeys`, `refundKeys`, and `locktime` only. A v3 keyset would encode a different secret, so the page refuses that keyset before the swap. `web/src/mint-pod-check.ts` is the same swap as a node script.
 
 **The check before counting.** The mint does not know what a pot is. It only checks keys and time. So `secret_matches_pot` in `server/src/lock.rs` accepts a proof only when the kind is P2PK, `data` is the pot key, and there are exactly two tags: the pot's locktime and one refund key. 02 and 03 keys with the same x-coordinate count as the same key. The contributions route then asks the mint that the proof is signed and unspent before it adds the amount. Signed is a NUT-12 DLEQ check, `verify_dleq` in `server/src/mint.rs`, against the key for that amount on the active sat keyset. Unspent is NUT-07, `POST /v1/checkstate`. The refund route runs those two checks before it returns proofs.
 
@@ -31,7 +31,7 @@ The limits are in the trust model: after the lock time both paths are valid, and
 
 Vaca does not implement NUT-08. The mint does: a melt can include blank outputs, and the mint returns whatever Lightning did not spend as blind signatures in `change`. Vaca builds the blanks and stores the proofs.
 
-**The surplus.** The fee reserve on the melt quote is the most the mint may spend to pay the invoice. It is not a fee Vaca charges. Contributors lock the invoice amount plus that reserve. `live_melt` in `server/src/mint.rs` takes the surplus as the locked total minus the invoice amount. The Lightning fee is known only after the mint pays, so the blanks cover the most that can come back. Sats locked above the invoice, including a reserve that a later quote no longer needs, are part of that same surplus. A surplus of 0 sends `outputs: null`.
+**The surplus.** The fee reserve on the melt quote is the most the mint may spend on Lightning to pay the invoice. It is not a fee Vaca charges. The mint also charges a NUT-02 input fee when it spends the proofs: `ceil(proof_count * input_fee_ppk / 1000)` on the active sat keyset. A rate of 0 adds nothing. Contributors lock the invoice amount, that Lightning reserve, and this input fee. The page's lock asks the wallet to put the input fee inside the proofs, so a later reclaim can return the amount that was asked for. The swap that creates the lock still spends one input fee from the original token, and that sat is not in the pot. `live_melt` in `server/src/mint.rs` takes the surplus as the locked total minus the invoice amount. It does not subtract the input fee again. The Lightning fee is known only after the mint pays, so the blanks cover the most that can come back. Sats locked above the invoice, including a reserve that a later quote no longer needs, are part of that same surplus. A surplus of 0 sends `outputs: null`.
 
 **The blanks.** `PreMintSecrets::blank` builds them for the active sat keyset from `GET /v1/keysets`. The `wallet` feature of the `cashu` crate is what exposes that function. Each blinded message has amount 0. The count is `ceil(log2(surplus))`, and at least one: one sat is one blank, three sats are two. The mint assigns the real denominations. Each secret is random for this melt. There is no seed to derive it again. After unblinding, the secret exists only inside the stored proof.
 
@@ -43,7 +43,7 @@ The database write starts after the mint has already paid. A `Pending` response,
 
 ## Trust model
 
-v1, the first version that moves sats: the server key is the only pot key (`n_sigs = 1`). The server can spend the locked ecash by itself. That is custodial for theft. Refunds still work when the server is gone, because the mint accepts the contributor's refund key after the lock time. The server key for that version stays in a file outside this repo, mode 600. Payout reads that file only after the fee gate is open and the advertised deadline has not passed. It does not log the path or the private key. Health still reports only whether the path is set and whether a file is there.
+v1, the first version that moves sats: the server key is the only pot key (`n_sigs = 1`). The server can spend the locked ecash by itself. That is custodial for theft. Refunds still work when the server is gone, because the mint accepts the contributor's refund key after the lock time. The server key for that version stays in a file outside this repo, mode 600. Payout reads that file only after the fee gate is open and the advertised deadline has not passed. It does not log the path or the private key. Health still reports only whether the path is set, whether a file is there, and whether the public key is set. A pot response includes `server_pubkey`, the compressed key a contribution locks to. It is null when that key is unset. Health does not include the key.
 
 v2, the pitch: the organizer and the server both sign (`n_sigs = 2`). The server co-signs only when the locked total covers the target plus the melt fee reserve, and only for the destination stored at creation. Neither signature is enough on its own. If the organizer and the server both agree, they can still spend, including after the deadline, and they can win the race against refunds.
 
@@ -180,24 +180,20 @@ curl -sS http://127.0.0.1:8085/v1/mint/quote/bolt11/$quote_id
 
 The quote object should show `amount` 100, `amount_paid` 100, `amount_issued` 0, and `state` `PAID`.
 
-## Later: page layout
+## Dev: mint a test token
 
-The page works as a sequence of controls, and it is hard to use. This pass is
-layout and wording only. Do not change `createSecret`, `secretMatchesPot`, or
-the payout and refund routes while doing it.
+A pot on this regtest mint needs a token from that mint. A normal wallet cannot mint one. `scripts/mint-test-token.mjs` asks the mint for a bolt11 quote, prints the invoice, and waits. Pay that invoice from lab node A with `./scripts/cli a bolt11-send`, from `~/projects/ldk-lab`, while the script is still running. When the quote is `PAID`, the script writes an unlocked token. It prints the amount and the path. It does not print the token.
 
-- The trust text is repeated in full on the home page and on every pot, above the action.
-- "Create refund key" has no section around it. Each click adds another pubkey paragraph.
-- On a pot, the button says "generate". The field label is "compresed pubkey". Alerts are extra `h1` and `h2` elements, and each click adds more of them.
-- A failed `createSecret` has no message on the page.
-- The secret is shown with no label. Long pubkeys and secrets need a place to wrap.
-- There is no `primary` style. The home page is a stack of unrelated blocks.
+```fish
+cd ~/projects/vaca
+node scripts/mint-test-token.mjs 100 ~/Downloads/vaca-test-token.cashu
+```
 
-Done when a new visitor can create a refund key, open a pot, and build a lock without reading the source. The private key stays off the page, out of the URL, and out of `localStorage`.
+The amount defaults to 100 sats. The path defaults to `~/Downloads/vaca-test-token.cashu`. `VACA_MINT_URL` defaults to `http://127.0.0.1:8085`. The file is mode 600. The script refuses to replace a file that already exists.
 
 ## Not in this skeleton
 
-Posting the swapped regtest proofs is a later step. v2 co-signing comes later. The refund route returns proofs after the lock time. The page swaps them and downloads a token. The server does not spend them. NUT-08 change is stored on payout. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
+v2 co-signing comes later. The refund route returns proofs after the lock time. The page swaps them and downloads a token. The server does not spend them. NUT-08 change is stored on payout. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
 
 Local git only. No remote.
 

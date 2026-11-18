@@ -26,6 +26,8 @@ export interface Pot {
   destination: string;
   mint_url: string;
   organizer_pubkey: string | null;
+  /** Compressed key proofs must lock to. Null when the server has no key. */
+  server_pubkey: string | null;
   status: string;
   created_at_unix: number;
   contribution_count: number;
@@ -37,6 +39,10 @@ export interface Pot {
   sigflag_v1: string;
   sigflag_v2: string;
   fee_reserve_sats: number | null;
+  /** NUT-02 rate of the mint's active sat keyset. Null when the mint did not say. */
+  input_fee_ppk: number | null;
+  /** Input fee for the proofs already counted. Null when the rate is unknown. */
+  input_fee_sats: number | null;
   sats_still_needed: number;
   payout_allowed: boolean;
   fee_quoted: boolean;
@@ -125,7 +131,31 @@ export function postRefund(id: string, refundPubkey: string): Promise<{ proofs: 
   });
 }
 
-export function postUnimplemented(id: string, route: "contributions" | "payout"): Promise<never> {
+export function postPayout(id: string): Promise<Pot> {
+  return request<Pot>(`/api/pots/${encodeURIComponent(id)}/payout`, {
+    method: "POST",
+  });
+}
+
+export function postContribution(
+  id: string,
+  refundPubkey: string,
+  proofs: Array<{
+    amount: number;
+    id: string;
+    secret: string;
+    C: string;
+    dleq: { e: string; s: string; r: string };
+  }>,
+): Promise<Pot> {
+  return request<Pot>(`/api/pots/${encodeURIComponent(id)}/contributions`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ refund_pubkey: refundPubkey, proofs }),
+  });
+}
+
+export function postUnimplemented(id: string, route: "payout"): Promise<never> {
   return request<never>(`/api/pots/${encodeURIComponent(id)}/${route}`, {
     method: "POST",
     headers: { "content-type": "application/json" },

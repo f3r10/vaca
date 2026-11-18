@@ -62,6 +62,7 @@ pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub mint: MintBackend,
     pub quote_cache: SimpleCache,
+    pub keyset_fees: mint::KeysetFeeCache,
     /// How many times payout asked the mint to pay. A paid pot does not add to it.
     pub melt_attempts: Arc<AtomicUsize>,
 }
@@ -164,8 +165,9 @@ async fn list_pots(State(state): State<AppState>) -> Result<Json<PotList>, ApiEr
                 .await
             }
         };
-        let (view, _) = pot.view(&melt_quote_lookup);
-        pots.push(view)
+        let ppk = fee_ppk(&state, &pot.mint_url).await;
+        let view = pot.view(&melt_quote_lookup, ppk);
+        pots.push(show_server_pubkey(&state, view))
     }
     Ok(Json(PotList { pots }))
 }
@@ -191,8 +193,9 @@ async fn get_pot(
             .await
         }
     };
-    let (view, _) = pot.view(&melt_quote_lookup);
-    Ok(Json(view))
+    let ppk = fee_ppk(&state, &pot.mint_url).await;
+    let view = pot.view(&melt_quote_lookup, ppk);
+    Ok(Json(show_server_pubkey(&state, view)))
 }
 
 async fn create_pot(
@@ -228,8 +231,9 @@ async fn create_pot(
             .await
         }
     };
-    let (view, _) = stored.view(&melt_quote_lookup);
-    Ok((StatusCode::CREATED, Json(view)))
+    let ppk = fee_ppk(&state, &stored.mint_url).await;
+    let view = stored.view(&melt_quote_lookup, ppk);
+    Ok((StatusCode::CREATED, Json(show_server_pubkey(&state, view))))
 }
 
 #[derive(Deserialize)]
@@ -294,8 +298,10 @@ async fn post_contribution(
     if now_unix() > pot.deadline_unix {
         return Err(reject(&id, "The deadline has passed."));
     }
-
-    let (preview, ceiling) = pot.view(&melt_quote_lookup);
+    let Some(ppk) = fee_ppk(&state, &pot.mint_url).await else {
+        return Err(reject(&id, mint::UNKNOWN_INPUT_FEE));
+    };
+    let preview = pot.view(&melt_quote_lookup, Some(ppk));
     let locktime = preview.locktime_unix;
     let mut seen = HashSet::new();
     let mut sum = 0u64;
@@ -318,6 +324,15 @@ async fn post_contribution(
             .checked_add(proof.amount)
             .ok_or_else(|| reject(&id, "That amount passes the target plus the fee reserve."))?;
     }
+    let existing = u64::try_from(pot.contribution_count).unwrap_or(u64::MAX);
+    let new_count = u64::try_from(body.proofs.len()).unwrap_or(u64::MAX);
+    let ceiling = pot::contribution_ceiling(
+        pot.target_sats,
+        &melt_quote_lookup,
+        ppk,
+        existing,
+        new_count,
+    );
     if pot
         .locked_sats
         .checked_add(sum)
@@ -364,8 +379,8 @@ async fn post_contribution(
         sats = sum,
         "counted proofs"
     );
-    let (view, _) = stored.view(&melt_quote_lookup);
-    Ok(Json(view))
+    let view = stored.view(&melt_quote_lookup, Some(ppk));
+    Ok(Json(show_server_pubkey(&state, view)))
 }
 
 fn reject(pot_id: &str, message: &str) -> ApiError {
@@ -440,8 +455,9 @@ async fn payout(
 ) -> Result<Json<PotView>, ApiError> {
     let pot = require_pot(&state, &id)?;
     if pot.status == "paid" {
-        let (view, _) = pot.view(&mint::MeltQuoteLookup::Unavailable);
-        return Ok(Json(view));
+        let ppk = fee_ppk(&state, &pot.mint_url).await;
+        let view = pot.view(&mint::MeltQuoteLookup::Unavailable, ppk);
+        return Ok(Json(show_server_pubkey(&state, view)));
     }
     let melt_quote_lookup = match state.quote_cache.get_fresh(
         &(pot.mint_url.clone(), pot.destination.clone()),
@@ -460,8 +476,17 @@ async fn payout(
         }
     };
 
-    let (preview, _) = pot.view(&melt_quote_lookup);
+    let ppk = fee_ppk(&state, &pot.mint_url).await;
+    let preview = pot.view(&melt_quote_lookup, ppk);
     if !preview.payout_allowed {
+        if ppk.is_none() {
+            if let mint::MeltQuoteLookup::Quoted(quote) = &melt_quote_lookup {
+                if quote.amount_sats == pot.target_sats {
+                    tracing::info!(pot_id = %id, "input fee unknown");
+                    return Err(ApiError::BadRequest(mint::UNKNOWN_INPUT_FEE.to_string()));
+                }
+            }
+        }
         tracing::info!(pot_id = %id, "The pot has not reached the target plus the fee reserve.");
         return Err(ApiError::BadRequest(
             "The pot has not reached the target plus the fee reserve.".to_string(),
@@ -558,12 +583,25 @@ async fn payout(
         db::finish_payout(connection, &pot.id, &change_rows)
     })?;
     let stored = require_pot(&state, &id)?;
-    let (view, _) = stored.view(&mint::MeltQuoteLookup::Quoted(mint::MeltQuote {
-        amount_sats: paid.amount_sats,
-        fee_reserve_sats: paid.fee_reserve_sats,
-        expiry_unix: u64::MAX,
-    }));
-    Ok(Json(view))
+    let view = stored.view(
+        &mint::MeltQuoteLookup::Quoted(mint::MeltQuote {
+            amount_sats: paid.amount_sats,
+            fee_reserve_sats: paid.fee_reserve_sats,
+            expiry_unix: u64::MAX,
+        }),
+        ppk,
+    );
+    Ok(Json(show_server_pubkey(&state, view)))
+}
+
+async fn fee_ppk(state: &AppState, mint_url: &str) -> Option<u64> {
+    mint::active_sat_input_fee_ppk(&state.mint, mint_url, &state.keyset_fees).await
+}
+
+/// Puts the configured spend key on a pot response. Health stays a boolean.
+fn show_server_pubkey(state: &AppState, mut view: PotView) -> PotView {
+    view.server_pubkey = state.config.server_pubkey.clone();
+    view
 }
 
 #[derive(Deserialize)]
@@ -717,6 +755,7 @@ mod tests {
             db: Arc::new(Mutex::new(connection)),
             mint,
             quote_cache,
+            keyset_fees: mint::KeysetFeeCache::new(),
             melt_attempts: Arc::new(AtomicUsize::new(0)),
         };
         (router(state), path)
@@ -747,6 +786,7 @@ mod tests {
             db: Arc::new(Mutex::new(connection)),
             mint,
             quote_cache: SimpleCache::new(),
+            keyset_fees: mint::KeysetFeeCache::new(),
             melt_attempts: melt_attempts.clone(),
         };
         (router(state), path, melt_attempts)
@@ -792,7 +832,110 @@ mod tests {
         assert_eq!(body["server_pubkey_set"], false);
         assert_eq!(body["cdk_linked"], false);
         assert_eq!(body["cashu_ts"], "5.0.0-rc.12");
+        assert!(body.get("server_pubkey").is_none());
         let _ = std::fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn pot_view_includes_the_server_pubkey_and_health_omits_it() {
+        let (unset, unset_path) = test_app();
+        let created = json_body(
+            unset
+                .clone()
+                .oneshot(post_json(
+                    "/api/pots",
+                    serde_json::json!({
+                        "title": "No key",
+                        "kind": "cause",
+                        "target_sats": 1_000,
+                        "deadline_unix": now_unix() + 86_400,
+                        "destination": "lnbc50n1example"
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(created.get("server_pubkey"), Some(&serde_json::Value::Null));
+        let unset_health = json_body(
+            unset
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/health")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert!(unset_health.get("server_pubkey").is_none());
+        assert_eq!(unset_health["server_pubkey_set"], false);
+        let _ = std::fs::remove_file(unset_path);
+
+        let pubkey = format!("02{}", "ab".repeat(32));
+        let (set, set_path) = test_app_with(Some(pubkey.clone()));
+        let created = json_body(
+            set.clone()
+                .oneshot(post_json(
+                    "/api/pots",
+                    serde_json::json!({
+                        "title": "With key",
+                        "kind": "cause",
+                        "target_sats": 1_000,
+                        "deadline_unix": now_unix() + 86_400,
+                        "destination": "lnbc50n1example"
+                    }),
+                ))
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(created["server_pubkey"].as_str(), Some(pubkey.as_str()));
+        let id = created["id"].as_str().unwrap();
+        let fetched = json_body(
+            set.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(format!("/api/pots/{id}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(fetched["server_pubkey"].as_str(), Some(pubkey.as_str()));
+        let list = json_body(
+            set.clone()
+                .oneshot(
+                    Request::builder()
+                        .uri("/api/pots")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(
+            list["pots"][0]["server_pubkey"].as_str(),
+            Some(pubkey.as_str())
+        );
+        let set_health = json_body(
+            set.oneshot(
+                Request::builder()
+                    .uri("/api/health")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap(),
+        )
+        .await;
+        assert!(set_health.get("server_pubkey").is_none());
+        assert_eq!(set_health["server_pubkey_set"], true);
+        let _ = std::fs::remove_file(set_path);
     }
 
     #[tokio::test]
@@ -1114,6 +1257,8 @@ mod tests {
         let body = json_body(response).await;
         assert_eq!(body["locked_sats"], 1000);
         assert_eq!(body["fee_reserve_sats"], 1);
+        assert_eq!(body["input_fee_ppk"], 0);
+        assert_eq!(body["input_fee_sats"], 0);
         assert_eq!(body["sats_still_needed"], 1);
         assert_eq!(body["payout_allowed"], false);
         assert_eq!(body["status"], "open");

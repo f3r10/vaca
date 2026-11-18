@@ -1,5 +1,5 @@
 import type { Pot } from "../api";
-import { destinationKind, duration, formatDate, formatNumber, formatSats, formatTime, hostOf } from "../format";
+import { destinationKind, duration, formatDate, formatNumber, formatSats, formatTime, hostOf, mintKind } from "../format";
 import { potPhase, type PotPhase } from "../pot-state";
 import { t } from "../strings";
 import { h } from "./dom";
@@ -86,7 +86,7 @@ export function facts(pot: Pot): HTMLElement {
     fact("Contributions", String(pot.contribution_count)),
     fact(t.payingTo, destLabel),
     fact(t.feeReserve, fee),
-    fact(t.mint, h("span", { class: "mono wrap", title: pot.mint_url }, hostOf(pot.mint_url)), copyButton(pot.mint_url, "mint URL")),
+    fact(t.mint, h("span", {}, h("span", { class: "mono wrap", title: pot.mint_url }, hostOf(pot.mint_url)), mintKind(pot.mint_url) === "other" ? null : h("span", { class: "muted" }, mintKind(pot.mint_url) === "local" ? " · local test mint" : " · test mint")), copyButton(pot.mint_url, "mint URL")),
   );
 }
 

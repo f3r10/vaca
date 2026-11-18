@@ -180,4 +180,101 @@ export const how = {
   back: "Back to pots",
 } as const;
 
+/** Copy for the contribute panel. One object so a translation is one more object. */
+export const contribute = {
+  title: "Contribute",
+  key: {
+    title: "Back up a refund key",
+    intro: "This key is how you get your sats back if the pot misses its target. Vaca can't recover it for you, so losing the file means losing your refund.",
+    safe: "Keep it somewhere safe, like a password manager or cloud drive. It never leaves this browser except as this download.",
+    create: "Create refund key and download it",
+    createAgain: "Create a different key",
+    saving: (file: string) => `Your browser is saving ${file}. This is the only copy, so check that it arrived.`,
+    where: "Look in your Downloads folder. On iPhone, open Files, then Downloads. On Android, open Files, then Downloads. Can't find it? Create a new key: nothing is locked yet, so you lose nothing.",
+    pubLabel: "Public key (safe to share):",
+    verifyLabel: "Choose the file you just saved",
+    verifyHint: "Vaca opens it once to check it saved correctly. That proves your refund works before any money is locked.",
+    haveFile: "I already have a key file",
+    haveFileLabel: "Choose your key file",
+    ok: (short: string) => `Backup confirmed. Your public key starts ${short}.`,
+    differs: "This is a different key from the one you just created. Vaca will use the key in this file.",
+    change: "Use a different key",
+    errors: {
+      none: "Choose your refund key file first.",
+      noPub: "That file has no public key line. Choose the file Vaca downloaded.",
+      noPriv: "That file has no private key line. Choose the file Vaca downloaded.",
+      mismatch: "The two keys in that file don't match, so it couldn't refund you. Choose another file.",
+    },
+  },
+  pay: {
+    title: "Pay",
+    locked: "Back up your key first. This step unlocks when you have.",
+    legend: "How do you want to pay?",
+    lightning: ["Pay with Lightning", "Use any Lightning wallet. No Cashu wallet needed."],
+    token: ["Use a Cashu token", "Paste ecash you already have from this pot's mint."],
+    serverKey: {
+      summary: "Advanced: server key",
+      help: "This server didn't publish its key, so paste it here. It's the compressed public key proofs are locked to.",
+      label: "Server public key",
+      bad: "The server key must be 66 hex characters starting with 02 or 03.",
+      wrong: "The server's key looks wrong. Tell whoever runs this pot.",
+    },
+    noFee: "The mint did not say what a proof costs. Nothing was locked.",
+  },
+  lightning: {
+    amountLabel: "Amount to contribute (sats)",
+    amountHint: (max: number) => `Up to ${max.toLocaleString("en")} sats. The pot still needs that much.`,
+    fill: (n: number) => `Fill the pot (${n.toLocaleString("en")})`,
+    summary: (pay: number, amount: number, fee: number) =>
+      fee > 0
+        ? `You pay ${pay.toLocaleString("en")} sats: ${amount.toLocaleString("en")} for the pot and ${fee.toLocaleString("en")} in mint fees.`
+        : `You pay ${pay.toLocaleString("en")} sats. The mint charges no fee.`,
+    loadingSummary: "Working out the mint's fee…",
+    button: (pay: number) => `Pay ${pay.toLocaleString("en")} sats with Lightning`,
+    buttonIdle: "Pay with Lightning",
+    retryMint: "Try minting again",
+    paidSafe: "Your payment is safe. Try again.",
+    errors: {
+      whole: "Enter a whole number of sats.",
+      min: "Enter at least 1 sat.",
+      max: (max: number) => `The pot only needs ${max.toLocaleString("en")} more sats. Enter that or less.`,
+    },
+    progress: {
+      invoice: "Asking the mint for an invoice…",
+      waiting: "Waiting for your payment…",
+      paid: "Paid. Creating your ecash…",
+      locking: "Locking it to the pot…",
+      counting: "Counting…",
+    },
+    invoiceTitle: "Pay this invoice",
+    invoiceHelp: "Scan the code with a Lightning wallet, open it in one, or copy it.",
+    qrLabel: "QR code for the Lightning invoice",
+    open: "Open in wallet",
+    keepOpen: "Keep this page open until it says your sats are counted. Closing it now could leave a paid invoice unredeemed.",
+    testMintFake: "This is a test mint. It pays the invoice itself, so no real sats move.",
+    testMintReal: "This is a test network. Pay the invoice with test sats only.",
+    cancel: "Cancel",
+    cancelled: "Stopped. Don't pay that invoice: this page is no longer watching it.",
+    leave: "Your payment is still being processed. Leaving now could leave a paid invoice unredeemed.",
+    saved: "Download my sats",
+    savedNote: "Something failed after the payment. Your browser is saving the ecash as a file. Keep it: those sats are yours.",
+  },
+  token: {
+    label: "Your ecash token",
+    hint: (host: string) => `From a Cashu wallet that uses this pot's mint (${host}). Paste it or choose a file.`,
+    paste: "Paste from clipboard",
+    chooseFile: "Or choose a token file",
+    empty: "Paste your token or choose a token file.",
+    button: "Lock sats in this pot",
+  },
+  result: {
+    counted: (sats: string) => `Locked ${sats} and the pot counted them. Keep your refund key file until the pot ends.`,
+    countedKeep: (sats: string) => `Locked ${sats} and the pot counted them. Your browser is saving your leftover sats as a file. Keep it: those sats are yours.`,
+    pendingRetry: " Your browser is saving your locked proofs as a file. You can post them again without another swap.",
+    retry: "Post the locked proofs again",
+    keepBtn: "Download the remainder",
+    lockedBtn: "Download the locked proofs",
+  },
+} as const;
+
 export const t = en;

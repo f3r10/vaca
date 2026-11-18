@@ -9,7 +9,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@cashu/cashu-ts": "5.0.0-rc.12"
+    "@cashu/cashu-ts": "5.0.0-rc.12",
+    "qrcode-generator": "2.0.4"
   },
   "devDependencies": {
     "@types/node": "^26.6.6",

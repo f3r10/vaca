@@ -18,6 +18,7 @@ export function potView(initial: Pot): PotView {
   let pot = initial;
   let reclaimedSats: number | undefined;
   let panelKind = "";
+  let disposePanel: (() => void) | null = null;
   const now = () => Math.floor(Date.now() / 1000);
 
   const cardHost = h("div", { class: "card-host" });
@@ -57,7 +58,13 @@ export function potView(initial: Pot): PotView {
     // A full pot keeps the contribute panel, so the result and downloads stay on screen.
     if (panelKind === "contribute" && want === "full") return;
     panelKind = want;
-    if (want === "contribute") panelHost.replaceChildren(contributePanel(() => pot, update));
+    disposePanel?.(); // stops any invoice polling in the panel we are replacing
+    disposePanel = null;
+    if (want === "contribute") {
+      const panel = contributePanel(() => pot, update);
+      disposePanel = panel.dispose;
+      panelHost.replaceChildren(panel.el);
+    }
     else if (want === "refund") panelHost.replaceChildren(refundPanel(() => pot, (sats) => { reclaimedSats = sats; renderCard(); }));
     else panelHost.replaceChildren(h("p", { class: "notice notice-wait" }, want === "full" ? app.pot.full : app.pot.closed));
   }
@@ -133,5 +140,5 @@ export function potView(initial: Pot): PotView {
     share,
     details,
   );
-  return { el, dispose: () => window.clearInterval(timer) };
+  return { el, dispose: () => { window.clearInterval(timer); disposePanel?.(); } };
 }

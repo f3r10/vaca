@@ -93,6 +93,7 @@ export const app = {
   serverDownHelp: "Check that it's running, then try again.",
   retry: "Try again",
   loading: "Loading…",
+  loadingSlow: "Still loading. The demo server may be waking up, which can take a few seconds.",
   home: {
     title: "Everyone chips in, or nobody pays.",
     lede: "A pot collects ecash toward a target. If it's met before the deadline, the pot pays a Lightning invoice fixed at the start. If not, everyone reclaims their own sats.",

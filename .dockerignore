@@ -1,0 +1,14 @@
+.git
+.github
+.agents
+.claude
+server/target
+web/node_modules
+web/dist
+data
+**/*.sqlite
+**/*.sqlite-*
+.env
+.env.*
+server-key.txt
+*.cashu

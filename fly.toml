@@ -1,0 +1,40 @@
+# One API machine. SQLite lives on the volume, so a second machine must not run.
+# The app name is not pinned here. scripts/deploy/deploy-api.sh passes --app "$FLY_APP".
+# primary_region and the volume region in scripts/deploy/bootstrap-fly.sh must match.
+
+primary_region = "iad"
+
+[build]
+  dockerfile = "deploy/Dockerfile"
+
+[env]
+  VACA_BIND = "0.0.0.0:8787"
+  VACA_DB_PATH = "/data/vaca.sqlite"
+  VACA_SERVER_KEY_PATH = "/data/server-key.txt"
+  VACA_EXPERIMENTAL = "true"
+
+[http_service]
+  internal_port = 8787
+  force_https = true
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    path = "/api/health"
+    timeout = "5s"
+
+[[mounts]]
+  source = "vaca_data"
+  destination = "/data"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory = "256mb"
+
+[deploy]
+  strategy = "immediate"

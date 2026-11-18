@@ -22,6 +22,16 @@ export function destinationKind(destination: string): DestinationKind {
   return "unknown";
 }
 
+export type MintKind = "local" | "test" | "other";
+
+/** A guess from the address, used only to label test money honestly. */
+export function mintKind(url: string): MintKind {
+  const host = hostOf(url).toLowerCase();
+  if (/^(localhost|127\.|\[::1\])/.test(host)) return "local";
+  if (/(^|\.)testnut\.|mutinynet|signet|regtest|testnet/.test(host)) return "test";
+  return "other";
+}
+
 export function hostOf(url: string): string {
   try {
     return new URL(url).host;

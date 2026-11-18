@@ -191,11 +191,34 @@ node scripts/mint-test-token.mjs 100 ~/Downloads/vaca-test-token.cashu
 
 The amount defaults to 100 sats. The path defaults to `~/Downloads/vaca-test-token.cashu`. `VACA_MINT_URL` defaults to `http://127.0.0.1:8085`. The file is mode 600. The script refuses to replace a file that already exists.
 
+## Public demo
+
+The public demo is the static page and the Rust API. It does not deploy bitcoind, the lab nodes, or a mint. Contributors bring ecash from the mint in `VACA_MINT_URL`. That mint must advertise NUT-11 and a bolt12 melt for the sat unit. `scripts/deploy/check-mint.mjs` reads `/v1/info` and checks both.
+
+Fly runs one API machine with a 1 GB volume for SQLite. The machine stays on. Vercel serves the page. The page is built with `VITE_API_BASE` set to the Fly origin, and Fly allows that page's origin in `VACA_CORS_ORIGIN`. The server key is a Fly secret. It is not in this repo, and the image build does not copy it. The API log warns that the bind address is not a loopback address. That warning is expected on Fly.
+
+Nothing deploys on push. The Actions workflow `Deploy` runs when you start it. `scripts/demo.sh` is still the local page. `primary_region` in `fly.toml` is `iad`, and the volume has to be in that same region.
+
+One-time setup, from this repo:
+
+```bash
+export FLY_APP=your-fly-app
+export FLY_REGION=iad
+bash scripts/deploy/bootstrap-fly.sh
+
+export VACA_MINT_URL=https://your-mint.example
+export VACA_CORS_ORIGIN=https://your-project.vercel.app
+export VACA_SERVER_PUBKEY=02...
+bash scripts/deploy/set-fly-secrets.sh /absolute/path/to/server-key.txt
+```
+
+`bootstrap-fly.sh` creates the app and the volume. `set-fly-secrets.sh` checks the mint, requires a mode 600 key file outside this repo, and imports the secrets. It does not print the key. Create the Vercel project so its production URL is `VACA_CORS_ORIGIN` before that import.
+
+GitHub secrets are `FLY_API_TOKEN`, `VERCEL_TOKEN`, `VERCEL_ORG_ID`, and `VERCEL_PROJECT_ID`. GitHub variables are `FLY_APP` and `VACA_API_ORIGIN` (`https://<fly-app>.fly.dev`). Then run the `Deploy` workflow. A deploy token from `fly tokens create deploy` is enough for `FLY_API_TOKEN`.
+
 ## Not in this skeleton
 
 v2 co-signing comes later. The refund route returns proofs after the lock time. The page swaps them and downloads a token. The server does not spend them. NUT-08 change is stored on payout. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
-
-Local git only. No remote.
 
 ## Safety
 

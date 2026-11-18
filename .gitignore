@@ -10,3 +10,4 @@
 .env.*
 .DS_Store
 server-key.txt
+.vercel

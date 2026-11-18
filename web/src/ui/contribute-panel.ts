@@ -64,7 +64,7 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
     downloadText(KEY_FILENAME, refundKeyFile(key));
     keyResult.hidden = false;
     keyResult.replaceChildren(
-      h("p", { class: "notice notice-wait" }, `Downloaded as ${KEY_FILENAME}. This is the only copy.`),
+      h("p", { class: "notice notice-wait" }, `Your browser is saving ${KEY_FILENAME}. This is the only copy, so check that it arrived.`),
       h("p", { class: "fine" }, "Look in your Downloads folder. On iPhone, open Files, then Downloads. On Android, open Files, then Downloads. Can't find it? Create a new key: nothing is locked yet, so you lose nothing."),
       h("p", { class: "fine" }, "Public key (safe to share):"),
       h("p", { class: "mono wrap key-pub" }, key.pubkey),
@@ -236,6 +236,8 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
         }
         onPot(pot);
         tokenText.value = "";
+        tokenFile.value = "";
+        keyFile.value = "";
         const counted = posting.reduce((sum, p) => sum + p.amount, 0);
         if (swapped && swapped.keep.length > 0) {
           remember(mintUrl, "", null, [], swapped.keep);

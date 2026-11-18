@@ -81,7 +81,14 @@ export const walletErrors: [RegExp, (m: RegExpMatchArray) => string][] = [
 
 export const app = {
   nav: { home: "Pots", how: "How it works", create: "Create a pot" },
-  banner: "Experimental. Regtest only: use test money, never real funds.",
+  banner: "Experimental. Test money only: never use real funds.",
+  github: { label: "Vaca on GitHub", url: "https://github.com/f3r10/vaca", readCode: "Read the code on GitHub" },
+  // Shown at the top of every page of the public demo (see VITE_PUBLIC_DEMO).
+  demo: {
+    label: "Demo notice",
+    text: "This public demo works only with a fake public test mint. Its invoices pay themselves and payouts are simulated, so no real sats move, and real Lightning wallets won't work here.",
+    link: "How it works",
+  },
   serverDown: "Can't reach the Vaca server.",
   serverDownHelp: "Check that it's running, then try again.",
   retry: "Try again",

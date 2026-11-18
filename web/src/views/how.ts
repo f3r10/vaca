@@ -1,4 +1,4 @@
-import { how } from "../strings";
+import { app, how } from "../strings";
 import { h } from "../ui/dom";
 
 function node(n: string, title: string, body: string): HTMLElement {
@@ -27,6 +27,7 @@ export function howView(): HTMLElement {
     ),
     h("section", { class: "section" }, h("h2", {}, how.whoTitle), h("div", { class: "who" }, ...how.who.map(([when, what]) => h("div", { class: "who-row" }, h("h3", {}, when), h("p", {}, what))))),
     h("section", { class: "section" }, h("h2", {}, how.trustTitle), h("ul", { class: "trust-list" }, ...how.trust.map((l) => h("li", {}, l)))),
+    h("p", {}, h("a", { href: app.github.url, target: "_blank", rel: "noopener noreferrer" }, `${app.github.readCode} →`)),
     h("a", { class: "back", href: "#/" }, `← ${how.back}`),
   );
 }

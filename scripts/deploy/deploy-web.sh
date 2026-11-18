@@ -24,6 +24,8 @@ done
 
 cd "$ROOT/web"
 export VITE_API_BASE="$ORIGIN"
+# Shows the fake-mint notice at the top of every page of the public demo.
+export VITE_PUBLIC_DEMO=1
 npm ci
 npx --yes vercel@latest pull --yes --environment=production
 npx --yes vercel@latest build --prod

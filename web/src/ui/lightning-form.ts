@@ -13,12 +13,13 @@
 
 import { assertPotCanTakeProofs } from "../contribute";
 import { friendly } from "../errors";
-import { mintKind } from "../format";
+import { mintKind, type MintKind } from "../format";
 import { isCancelled, mintPaid, openInvoice, planMint, waitUntilPaid, type MintPlan, type OpenInvoice } from "../lightning";
 import { contribute as c } from "../strings";
 import type { Session } from "./contribute-session";
 import { h } from "./dom";
 import { copyButton } from "./pot-parts";
+import { qrCode } from "./qr";
 import type { PayForm } from "./token-form";
 
 const PRESETS = [100, 500, 1000];
@@ -114,20 +115,32 @@ export function lightningForm(s: Session): PayForm {
     // The mint chose this text, so only build a wallet link from something that
     // really looks like an invoice. The scheme is fixed to lightning: either way.
     const looksLikeInvoice = /^ln[a-z0-9]+$/i.test(text);
+    // The QR code is only drawn for text that looks like an invoice. If the text
+    // is too long for a QR code, qrCode returns null and the visitor still has
+    // the Copy button.
+    const qr = looksLikeInvoice ? qrCode(text, c.lightning.qrLabel) : null;
     const cancel = h("button", { type: "button", class: "btn" }, c.lightning.cancel);
     cancel.addEventListener("click", () => waiting?.abort());
     invoiceHost.replaceChildren(
       h("div", { class: "invoice" },
         h("h4", {}, c.lightning.invoiceTitle),
         h("p", { class: "fine" }, c.lightning.invoiceHelp),
+        qr ? h("div", { class: "qr-wrap" }, qr) : null,
         h("p", { class: "mono wrap invoice-text", title: "Tap Copy to use the full invoice" }, short),
         h("div", { class: "actions" },
           looksLikeInvoice ? h("a", { class: "btn btn-primary", href: `lightning:${text}` }, c.lightning.open) : null,
           copyButton(text, "invoice"),
           cancel),
         h("p", { class: "notice notice-wait" }, c.lightning.keepOpen),
-        mintKind(s.getPot().mint_url) === "other" ? null : h("p", { class: "fine" }, c.lightning.testMint)),
+        testNote(mintKind(s.getPot().mint_url))),
     );
+  }
+
+  // Say "pays itself" only for mints that really do. A local or signet mint needs a real payment.
+  function testNote(kind: MintKind): HTMLElement | null {
+    if (kind === "fake") return h("p", { class: "fine" }, c.lightning.testMintFake);
+    if (kind === "other") return null;
+    return h("p", { class: "fine" }, c.lightning.testMintReal);
   }
 
   function setControls(disabled: boolean): void {

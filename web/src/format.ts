@@ -22,13 +22,18 @@ export function destinationKind(destination: string): DestinationKind {
   return "unknown";
 }
 
-export type MintKind = "local" | "test" | "other";
+// What kind of mint an address looks like. Only used to label test money honestly:
+//   fake  a public test mint with a pretend Lightning backend: its invoices pay themselves
+//   test  a real test network (signet, mutinynet, regtest): invoices need a real payment
+//   local a mint on this machine: invoices need a real payment from your own node
+//   other anything else, treated as real money
+export type MintKind = "fake" | "test" | "local" | "other";
 
-/** A guess from the address, used only to label test money honestly. */
 export function mintKind(url: string): MintKind {
   const host = hostOf(url).toLowerCase();
   if (/^(localhost|127\.|\[::1\])/.test(host)) return "local";
-  if (/(^|\.)testnut\.|mutinynet|signet|regtest|testnet/.test(host)) return "test";
+  if (/(^|\.)testnut\./.test(host)) return "fake";
+  if (/mutinynet|signet|regtest|testnet/.test(host)) return "test";
   return "other";
 }
 

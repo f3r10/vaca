@@ -39,6 +39,10 @@ export interface Pot {
   sigflag_v1: string;
   sigflag_v2: string;
   fee_reserve_sats: number | null;
+  /** NUT-02 rate of the mint's active sat keyset. Null when the mint did not say. */
+  input_fee_ppk: number | null;
+  /** Input fee for the proofs already counted. Null when the rate is unknown. */
+  input_fee_sats: number | null;
   sats_still_needed: number;
   payout_allowed: boolean;
   fee_quoted: boolean;

@@ -137,9 +137,35 @@ export function contributionProofs(proofs: Proof[]): ContributionProof[] {
   });
 }
 
-// True when every output is this pot's lock and the sum is the amount asked for.
-export function takeLockedProofs(proofs: Proof[], lock: PotLock, amount: number): ContributionProof[] {
-  if (sumProofs(proofs).toNumber() !== amount) {
+/** NUT-02: ceil(proofCount * inputFeePpk / 1000). No proofs, no fee. */
+export function inputFeeSats(inputFeePpk: number, proofCount: number): number {
+  if (
+    !Number.isSafeInteger(inputFeePpk) ||
+    inputFeePpk < 0 ||
+    !Number.isSafeInteger(proofCount) ||
+    proofCount < 0
+  ) {
+    throw new ContributeError("The mint did not say what a proof costs.");
+  }
+  if (inputFeePpk === 0 || proofCount === 0) return 0;
+  const fee = (BigInt(inputFeePpk) * BigInt(proofCount) + 999n) / 1000n;
+  if (fee > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new ContributeError("The mint returned a different amount.");
+  }
+  return Number(fee);
+}
+
+// The outputs must be this pot's lock. includeFees may add up to one input
+// fee for these proofs on top of the amount the page asked to lock.
+export function takeLockedProofs(
+  proofs: Proof[],
+  lock: PotLock,
+  amount: number,
+  inputFeePpk: number,
+): ContributionProof[] {
+  const sum = sumProofs(proofs).toNumber();
+  const allowance = inputFeeSats(inputFeePpk, proofs.length);
+  if (!Number.isSafeInteger(amount) || sum < amount || sum > amount + allowance) {
     throw new ContributeError("The mint returned a different amount.");
   }
   for (const proof of proofs) {
@@ -212,6 +238,10 @@ export async function lockForPot(
     if (!lockKeysetOk(wallet.keysetId)) {
       throw new ContributeError("This mint's keyset cannot hold this pot's lock.");
     }
+    // includeFees puts the next spend's input fee inside the locked proofs.
+    // The pot counts that extra. A later reclaim can return the amount asked
+    // for. This swap still spends one input fee from the original token, and
+    // that sat is not in the pot.
     const { send, keep } = await wallet.ops
       .send(amount, proofs)
       .asLocked(potLock(lock))

@@ -77,7 +77,7 @@ function show(): void {
 
 /** Mock a contribution landing so the fill and the target-reached moment can be judged. */
 function addSats(): void {
-  const scale = pot.target_sats + (pot.fee_reserve_sats ?? 0);
+  const scale = pot.target_sats + (pot.fee_reserve_sats ?? 0) + (pot.input_fee_sats ?? 0);
   from = Math.min(1, pot.locked_sats / scale);
   const locked = Math.min(scale, pot.locked_sats + 5_000);
   const quoted = pot.fee_quoted;

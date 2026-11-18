@@ -65,6 +65,7 @@ async fn main() {
         db: Arc::new(Mutex::new(connection)),
         mint: mint::MintBackend::Live,
         quote_cache,
+        keyset_fees: mint::KeysetFeeCache::new(),
         melt_attempts: Arc::new(AtomicUsize::new(0)),
     };
     let app = http::router(state);

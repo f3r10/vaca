@@ -5,6 +5,7 @@ import {
   classifyProofs,
   contributionAmount,
   contributionProofs,
+  inputFeeSats,
   lockKeysetOk,
   potLock,
   proofsToken,
@@ -66,9 +67,14 @@ if (!posted[0] || posted[0].dleq.r === "") throw new Error("dleq was dropped");
 if (body.includes(refund.privkey)) throw new Error("private key was posted");
 console.log("the posted proof has no witness");
 
-expectError(() => takeLockedProofs([here], lock, 5), "The mint returned a different amount.");
-expectError(() => takeLockedProofs([elsewhere], lock, 4), "The mint did not return this pot's lock.");
-if (takeLockedProofs([here], lock, 4)[0]?.amount !== 4) throw new Error("locked amount");
+expectError(() => takeLockedProofs([here], lock, 5, 0), "The mint returned a different amount.");
+expectError(() => takeLockedProofs([elsewhere], lock, 4, 0), "The mint did not return this pot's lock.");
+if (takeLockedProofs([here], lock, 4, 0)[0]?.amount !== 4) throw new Error("locked amount");
+if (inputFeeSats(100, 0) !== 0 || inputFeeSats(100, 4) !== 1 || inputFeeSats(100, 11) !== 2) {
+  throw new Error("input fee");
+}
+if (takeLockedProofs([here], lock, 3, 100)[0]?.amount !== 4) throw new Error("fee sat was refused");
+expectError(() => takeLockedProofs([here], lock, 2, 100), "The mint returned a different amount.");
 console.log("a matching lock is accepted");
 
 const file = JSON.stringify(serializeProofs([here]));

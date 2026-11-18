@@ -1,7 +1,10 @@
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use cashu::nuts::{
-    CheckStateRequest, CheckStateResponse, CurrencyUnit, KeysResponse, KeysetResponse, State,
+    CheckStateRequest, CheckStateResponse, CurrencyUnit, KeySetInfo, KeysResponse, KeysetResponse,
+    State,
 };
 use cashu::Proof;
 use serde::{Deserialize, Serialize};
@@ -13,7 +16,45 @@ pub(crate) const SIGNED: &str = "The mint did not sign this proof.";
 pub(crate) const SPENDABLE: &str = "The proof is not spendable.";
 pub(crate) const UNPAID: &str = "The mint did not pay this pot.";
 pub(crate) const PENDING: &str = "The mint has not finished this payment.";
+pub(crate) const UNKNOWN_INPUT_FEE: &str = "The mint did not say what a proof costs.";
 const UNREACHABLE: &str = "The mint could not be reached.";
+
+/// Successful `input_fee_ppk` reads, keyed by the mint URL with no trailing slash.
+/// A failed read is not stored, so the next request tries again.
+#[derive(Clone)]
+pub struct KeysetFeeCache {
+    store: Arc<RwLock<HashMap<String, u64>>>,
+}
+
+impl KeysetFeeCache {
+    pub fn new() -> Self {
+        Self {
+            store: Arc::new(RwLock::new(HashMap::new())),
+        }
+    }
+
+    fn get(&self, mint_url: &str) -> Option<u64> {
+        self.store
+            .read()
+            .unwrap_or_else(|err| err.into_inner())
+            .get(mint_url)
+            .copied()
+    }
+
+    fn set(&self, mint_url: &str, input_fee_ppk: u64) {
+        self.store
+            .write()
+            .unwrap_or_else(|err| err.into_inner())
+            .insert(mint_url.to_string(), input_fee_ppk);
+    }
+}
+
+/// NUT-02: ceil(proof_count * input_fee_ppk / 1000). Zero proofs cost nothing.
+pub(crate) fn input_fee_sats(input_fee_ppk: u64, proof_count: u64) -> u64 {
+    let product = u128::from(proof_count).saturating_mul(u128::from(input_fee_ppk));
+    let fee = product.div_ceil(1000);
+    u64::try_from(fee).unwrap_or(u64::MAX)
+}
 
 #[derive(Clone)]
 pub enum MintBackend {
@@ -169,7 +210,8 @@ pub async fn melt_proofs(
         }
         MintBackend::Scripted(kind) => {
             let quote = scripted_quote(*kind, target_sats);
-            covered(&quote, target_sats, locked_sats)?;
+            // The stand-in keyset charges no input fee. Live melts add the real one.
+            covered(&quote, target_sats, locked_sats, 0)?;
             let change = scripted_change(locked_sats, quote.amount_sats)?;
             Ok(PaidMelt {
                 amount_sats: quote.amount_sats,
@@ -223,8 +265,17 @@ fn lightning_method(destination: &str) -> Option<&'static str> {
     }
 }
 
-fn covered(quote: &MeltQuote, target_sats: u64, locked_sats: u64) -> Result<(), ApiError> {
-    let Some(needed) = quote.amount_sats.checked_add(quote.fee_reserve_sats) else {
+fn covered(
+    quote: &MeltQuote,
+    target_sats: u64,
+    locked_sats: u64,
+    input_fee_sats: u64,
+) -> Result<(), ApiError> {
+    let Some(needed) = quote
+        .amount_sats
+        .checked_add(quote.fee_reserve_sats)
+        .and_then(|sum| sum.checked_add(input_fee_sats))
+    else {
         return Err(ApiError::BadRequest(UNPAID.to_string()));
     };
     if quote.amount_sats == target_sats && locked_sats >= needed {
@@ -301,9 +352,14 @@ async fn live_melt(
         fee_reserve_sats: quoted.fee_reserve.into(),
         expiry_unix: 0,
     };
-    covered(&quote, target_sats, locked_sats)?;
+    // Price the proofs before the mint is asked to pay. A short pot stays open
+    // and the inputs are not posted. The fee is each proof's own keyset rate.
+    let keysets = sat_keysets(&client, base).await?;
+    let input_fee = proofs_input_fee(&keysets, proofs)?;
+    covered(&quote, target_sats, locked_sats, input_fee)?;
     // Lightning may spend the whole fee reserve. The blank outputs cover the
     // maximum that can come back: the locked total minus the invoice amount.
+    // The input fee is taken from the inputs and is not subtracted again.
     // Each blank has amount 0. The mint assigns the real amounts on the way back.
     let surplus = locked_sats
         .checked_sub(quote.amount_sats)
@@ -311,7 +367,7 @@ async fn live_melt(
     let blanks = if surplus == 0 {
         None
     } else {
-        let keyset_id = active_sat_keyset_id(&client, base).await?;
+        let keyset_id = active_sat_keyset_id(&keysets)?;
         match cashu::nuts::PreMintSecrets::blank(keyset_id, cashu::Amount::from(surplus)) {
             Ok(premint) => Some(premint),
             Err(_) => return Err(ApiError::BadRequest(UNPAID.to_string())),
@@ -341,19 +397,69 @@ async fn live_melt(
     })
 }
 
-async fn active_sat_keyset_id(
-    client: &reqwest::Client,
-    base: &str,
-) -> Result<cashu::nuts::Id, ApiError> {
+/// Active sat keyset rate. Scripted mints report 0 and do not open a socket.
+/// A live failure is `None`: the caller must not invent a fee.
+pub async fn active_sat_input_fee_ppk(
+    backend: &MintBackend,
+    mint_url: &str,
+    cache: &KeysetFeeCache,
+) -> Option<u64> {
+    match backend {
+        MintBackend::Scripted(_) => Some(0),
+        MintBackend::Live => {
+            let base = mint_url.trim_end_matches('/');
+            if base.is_empty() {
+                return None;
+            }
+            if let Some(ppk) = cache.get(base) {
+                return Some(ppk);
+            }
+            let client = reqwest::Client::builder()
+                .timeout(Duration::from_secs(10))
+                .build()
+                .ok()?;
+            let keysets: KeysetResponse = get_json(&client, &format!("{base}/v1/keysets"))
+                .await
+                .ok()?;
+            let ppk = keysets
+                .keysets
+                .into_iter()
+                .find(|keyset| keyset.active && keyset.unit == CurrencyUnit::Sat)?
+                .input_fee_ppk;
+            cache.set(base, ppk);
+            Some(ppk)
+        }
+    }
+}
+
+async fn sat_keysets(client: &reqwest::Client, base: &str) -> Result<Vec<KeySetInfo>, ApiError> {
     let keysets: KeysetResponse = get_json(client, &format!("{base}/v1/keysets"))
         .await
         .map_err(|_| ApiError::BadRequest(UNPAID.to_string()))?;
+    Ok(keysets.keysets)
+}
+
+fn active_sat_keyset_id(keysets: &[KeySetInfo]) -> Result<cashu::nuts::Id, ApiError> {
     keysets
-        .keysets
-        .into_iter()
+        .iter()
         .find(|keyset| keyset.active && keyset.unit == CurrencyUnit::Sat)
         .map(|keyset| keyset.id)
         .ok_or_else(|| ApiError::BadRequest(UNPAID.to_string()))
+}
+
+/// Sum of each proof's keyset rate, rounded up. A proof whose keyset is not
+/// listed fails the melt rather than being treated as free.
+fn proofs_input_fee(keysets: &[KeySetInfo], proofs: &[Proof]) -> Result<u64, ApiError> {
+    let mut sum = 0u128;
+    for proof in proofs {
+        let ppk = keysets
+            .iter()
+            .find(|keyset| keyset.id == proof.keyset_id)
+            .map(|keyset| keyset.input_fee_ppk)
+            .ok_or_else(|| ApiError::BadRequest(UNPAID.to_string()))?;
+        sum = sum.saturating_add(u128::from(ppk));
+    }
+    u64::try_from(sum.div_ceil(1000)).map_err(|_| ApiError::BadRequest(UNPAID.to_string()))
 }
 
 async fn sat_keyset_keys(

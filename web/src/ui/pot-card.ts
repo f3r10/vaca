@@ -23,6 +23,14 @@ export interface PotCardOptions {
   fromFraction?: number;
 }
 
+function feeCaption(pot: Pot): string {
+  if (!pot.fee_quoted || pot.fee_reserve_sats === null) return t.feeReserveNotQuoted;
+  const reserve = `+ ${formatSats(pot.fee_reserve_sats)} fee reserve`;
+  const input = typeof pot.input_fee_sats === "number" ? pot.input_fee_sats : 0;
+  if (input > 0) return `${reserve} · + ${formatSats(input)} input fee`;
+  return reserve;
+}
+
 function button(label: string, primary: boolean, o: PotCardOptions, act: CardAction, disabled = false): HTMLButtonElement {
   const b = h("button", { type: "button", class: primary ? "btn btn-primary" : "btn" }, label);
   if (disabled) b.disabled = true;
@@ -92,7 +100,7 @@ export function potCard(pot: Pot, now: number, o: PotCardOptions = {}): HTMLElem
   if (o.problem === "quote-expired") outcome.push(notice("warning", t.problem.quoteExpired));
   if (!destinationOk(pot)) outcome.push(notice("warning", t.problem.noPayout));
 
-  const caption = pot.fee_quoted && pot.fee_reserve_sats !== null ? `+ ${formatSats(pot.fee_reserve_sats)} fee reserve` : t.feeReserveNotQuoted;
+  const caption = feeCaption(pot);
 
   return h(
     "article",

@@ -62,6 +62,7 @@ pub struct AppState {
     pub db: Arc<Mutex<Connection>>,
     pub mint: MintBackend,
     pub quote_cache: SimpleCache,
+    pub keyset_fees: mint::KeysetFeeCache,
     /// How many times payout asked the mint to pay. A paid pot does not add to it.
     pub melt_attempts: Arc<AtomicUsize>,
 }
@@ -164,7 +165,8 @@ async fn list_pots(State(state): State<AppState>) -> Result<Json<PotList>, ApiEr
                 .await
             }
         };
-        let (view, _) = pot.view(&melt_quote_lookup);
+        let ppk = fee_ppk(&state, &pot.mint_url).await;
+        let view = pot.view(&melt_quote_lookup, ppk);
         pots.push(show_server_pubkey(&state, view))
     }
     Ok(Json(PotList { pots }))
@@ -191,7 +193,8 @@ async fn get_pot(
             .await
         }
     };
-    let (view, _) = pot.view(&melt_quote_lookup);
+    let ppk = fee_ppk(&state, &pot.mint_url).await;
+    let view = pot.view(&melt_quote_lookup, ppk);
     Ok(Json(show_server_pubkey(&state, view)))
 }
 
@@ -228,7 +231,8 @@ async fn create_pot(
             .await
         }
     };
-    let (view, _) = stored.view(&melt_quote_lookup);
+    let ppk = fee_ppk(&state, &stored.mint_url).await;
+    let view = stored.view(&melt_quote_lookup, ppk);
     Ok((StatusCode::CREATED, Json(show_server_pubkey(&state, view))))
 }
 
@@ -294,8 +298,10 @@ async fn post_contribution(
     if now_unix() > pot.deadline_unix {
         return Err(reject(&id, "The deadline has passed."));
     }
-
-    let (preview, ceiling) = pot.view(&melt_quote_lookup);
+    let Some(ppk) = fee_ppk(&state, &pot.mint_url).await else {
+        return Err(reject(&id, mint::UNKNOWN_INPUT_FEE));
+    };
+    let preview = pot.view(&melt_quote_lookup, Some(ppk));
     let locktime = preview.locktime_unix;
     let mut seen = HashSet::new();
     let mut sum = 0u64;
@@ -318,6 +324,15 @@ async fn post_contribution(
             .checked_add(proof.amount)
             .ok_or_else(|| reject(&id, "That amount passes the target plus the fee reserve."))?;
     }
+    let existing = u64::try_from(pot.contribution_count).unwrap_or(u64::MAX);
+    let new_count = u64::try_from(body.proofs.len()).unwrap_or(u64::MAX);
+    let ceiling = pot::contribution_ceiling(
+        pot.target_sats,
+        &melt_quote_lookup,
+        ppk,
+        existing,
+        new_count,
+    );
     if pot
         .locked_sats
         .checked_add(sum)
@@ -364,7 +379,7 @@ async fn post_contribution(
         sats = sum,
         "counted proofs"
     );
-    let (view, _) = stored.view(&melt_quote_lookup);
+    let view = stored.view(&melt_quote_lookup, Some(ppk));
     Ok(Json(show_server_pubkey(&state, view)))
 }
 
@@ -440,7 +455,8 @@ async fn payout(
 ) -> Result<Json<PotView>, ApiError> {
     let pot = require_pot(&state, &id)?;
     if pot.status == "paid" {
-        let (view, _) = pot.view(&mint::MeltQuoteLookup::Unavailable);
+        let ppk = fee_ppk(&state, &pot.mint_url).await;
+        let view = pot.view(&mint::MeltQuoteLookup::Unavailable, ppk);
         return Ok(Json(show_server_pubkey(&state, view)));
     }
     let melt_quote_lookup = match state.quote_cache.get_fresh(
@@ -460,8 +476,17 @@ async fn payout(
         }
     };
 
-    let (preview, _) = pot.view(&melt_quote_lookup);
+    let ppk = fee_ppk(&state, &pot.mint_url).await;
+    let preview = pot.view(&melt_quote_lookup, ppk);
     if !preview.payout_allowed {
+        if ppk.is_none() {
+            if let mint::MeltQuoteLookup::Quoted(quote) = &melt_quote_lookup {
+                if quote.amount_sats == pot.target_sats {
+                    tracing::info!(pot_id = %id, "input fee unknown");
+                    return Err(ApiError::BadRequest(mint::UNKNOWN_INPUT_FEE.to_string()));
+                }
+            }
+        }
         tracing::info!(pot_id = %id, "The pot has not reached the target plus the fee reserve.");
         return Err(ApiError::BadRequest(
             "The pot has not reached the target plus the fee reserve.".to_string(),
@@ -558,12 +583,19 @@ async fn payout(
         db::finish_payout(connection, &pot.id, &change_rows)
     })?;
     let stored = require_pot(&state, &id)?;
-    let (view, _) = stored.view(&mint::MeltQuoteLookup::Quoted(mint::MeltQuote {
-        amount_sats: paid.amount_sats,
-        fee_reserve_sats: paid.fee_reserve_sats,
-        expiry_unix: u64::MAX,
-    }));
+    let view = stored.view(
+        &mint::MeltQuoteLookup::Quoted(mint::MeltQuote {
+            amount_sats: paid.amount_sats,
+            fee_reserve_sats: paid.fee_reserve_sats,
+            expiry_unix: u64::MAX,
+        }),
+        ppk,
+    );
     Ok(Json(show_server_pubkey(&state, view)))
+}
+
+async fn fee_ppk(state: &AppState, mint_url: &str) -> Option<u64> {
+    mint::active_sat_input_fee_ppk(&state.mint, mint_url, &state.keyset_fees).await
 }
 
 /// Puts the configured spend key on a pot response. Health stays a boolean.
@@ -723,6 +755,7 @@ mod tests {
             db: Arc::new(Mutex::new(connection)),
             mint,
             quote_cache,
+            keyset_fees: mint::KeysetFeeCache::new(),
             melt_attempts: Arc::new(AtomicUsize::new(0)),
         };
         (router(state), path)
@@ -753,6 +786,7 @@ mod tests {
             db: Arc::new(Mutex::new(connection)),
             mint,
             quote_cache: SimpleCache::new(),
+            keyset_fees: mint::KeysetFeeCache::new(),
             melt_attempts: melt_attempts.clone(),
         };
         (router(state), path, melt_attempts)
@@ -1223,6 +1257,8 @@ mod tests {
         let body = json_body(response).await;
         assert_eq!(body["locked_sats"], 1000);
         assert_eq!(body["fee_reserve_sats"], 1);
+        assert_eq!(body["input_fee_ppk"], 0);
+        assert_eq!(body["input_fee_sats"], 0);
         assert_eq!(body["sats_still_needed"], 1);
         assert_eq!(body["payout_allowed"], false);
         assert_eq!(body["status"], "open");

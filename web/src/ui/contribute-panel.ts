@@ -6,6 +6,7 @@ import {
   classifyProofs,
   contributionAmount,
   contributionProofs,
+  inputFeeSats,
   lockForPot,
   proofSats,
   proofsToken,
@@ -207,6 +208,10 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
         if (!SERVER_KEY_RE.test(serverPubkey)) {
           return say(pot.server_pubkey ? "The server's key looks wrong. Tell whoever runs this pot." : "The server key must be 66 hex characters starting with 02 or 03.", "error");
         }
+        const inputFeePpk = pot.input_fee_ppk;
+        if (typeof inputFeePpk !== "number" || !Number.isSafeInteger(inputFeePpk) || inputFeePpk < 0) {
+          return say("The mint did not say what a proof costs. Nothing was locked.", "error");
+        }
         assertPotCanTakeProofs(pot, Math.floor(Date.now() / 1000));
         const raw = tokenText.value.trim() || (await tokenFile.files?.[0]?.text())?.trim() || "";
         if (raw === "") return say("Paste your token or choose a token file.", "error");
@@ -219,13 +224,14 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
         if (kind === "mixed") return say("That token mixes locked and unlocked proofs. Use one or the other.", "error");
         let posting: ContributionProof[];
         if (kind === "this-pot") {
-          if (proofSats(token.proofs) > pot.sats_still_needed) return say("That is more than the pot still needs. Use a smaller token.", "error");
+          const extra = inputFeeSats(inputFeePpk, token.proofs.length);
+          if (proofSats(token.proofs) > pot.sats_still_needed + extra) return say("That is more than the pot still needs. Use a smaller token.", "error");
           posting = contributionProofs(token.proofs);
         } else {
           const amount = contributionAmount(proofSats(token.proofs), pot.sats_still_needed);
           setBusy(true, "Swapping with the mint…");
           swapped = await lockForPot(mintUrl, token.proofs, amount, lock);
-          posting = takeLockedProofs(swapped.send, lock, amount);
+          posting = takeLockedProofs(swapped.send, lock, amount, inputFeePpk);
         }
         setBusy(true, "Counting…");
         try {

@@ -21,7 +21,7 @@ export function potPhase(pot: Pot, nowUnix: number): PotPhase {
 }
 
 export interface Progress {
-  /** Everything the pot has to hold: the target plus the reserve, when quoted. */
+  /** Target, plus the Lightning reserve and the input fee when the mint quoted them. */
   scale: number;
   lockedPct: number;
   targetPct: number;
@@ -31,7 +31,8 @@ export interface Progress {
 
 export function potProgress(pot: Pot): Progress {
   const reserve = pot.fee_quoted && pot.fee_reserve_sats !== null ? pot.fee_reserve_sats : 0;
-  const scale = pot.target_sats + reserve;
+  const input = pot.fee_quoted && typeof pot.input_fee_sats === "number" ? pot.input_fee_sats : 0;
+  const scale = pot.target_sats + reserve + input;
   return {
     scale,
     lockedPct: Math.min(1, pot.locked_sats / scale),

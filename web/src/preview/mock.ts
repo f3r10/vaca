@@ -30,6 +30,8 @@ export function mockPot(name: MockName, now = Math.floor(Date.now() / 1000)): Po
     sigflag_v1: "SIG_INPUTS",
     sigflag_v2: "SIG_ALL",
     fee_reserve_sats: null,
+    input_fee_ppk: 0,
+    input_fee_sats: 0,
     sats_still_needed: 0,
     payout_allowed: false,
     fee_quoted: false,

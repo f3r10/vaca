@@ -32,10 +32,19 @@
   :focus-visible {
     outline: 3px solid var(--color-focus);
     outline-offset: 2px;
-    border-radius: 4px;
   }
 
   button, input, select, textarea { font: inherit; color: inherit; }
+  ::placeholder { color: var(--color-text-secondary); opacity: 1; }
+
+  /* Tap-friendly file picker: the native input, with a 48px button. */
+  input[type="file"] { font-size: var(--text-sm); color: var(--color-text-secondary); }
+  input[type="file"]::file-selector-button {
+    min-height: 3rem; margin-right: var(--space-3); padding: 0 var(--space-5);
+    border: 1px solid var(--color-border-strong); border-radius: var(--radius-pill);
+    background: var(--color-bg-surface); color: var(--color-text);
+    font: inherit; font-weight: 600; cursor: pointer;
+  }
 
   [hidden] { display: none !important; }
   [tabindex="-1"]:focus { outline: none; }

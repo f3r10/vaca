@@ -15,7 +15,7 @@ export function refundPanel(getPot: () => Pot, onReclaimed: (sats: number) => vo
   let saved: { filename: string; contents: string } | null = null;
 
   const keyFile = h("input", { type: "file", id: "reclaim-key-file", accept: ".txt,text/plain" }) as HTMLInputElement;
-  const go = h("button", { type: "button", class: "btn btn-primary" }, "Reclaim my sats");
+  const go = h("button", { type: "button", class: "btn btn-primary" }, "Reclaim sats");
   const again = h("button", { type: "button", class: "btn" }, "Download the token again");
   again.hidden = true;
   const status = h("div", { class: "status", role: "status", "aria-live": "polite" });
@@ -56,7 +56,7 @@ export function refundPanel(getPot: () => Pot, onReclaimed: (sats: number) => vo
       } finally {
         busy = false;
         go.disabled = false;
-        go.textContent = "Reclaim my sats";
+        go.textContent = "Reclaim sats";
       }
     })();
   });

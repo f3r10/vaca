@@ -20,6 +20,8 @@ function field(id: string, label: string, hint: string, input: HTMLElement): { e
   const error = h("p", { class: "field-error", id: `${id}-error`, hidden: "" });
   const hintEl = h("p", { class: "hint", id: `${id}-hint` }, hint);
   input.setAttribute("aria-describedby", `${id}-hint ${id}-error`);
+  input.setAttribute("name", id.replace("pot-", ""));
+  if (id !== "pot-organizer") input.setAttribute("aria-required", "true");
   return { el: h("div", { class: "field" }, h("label", { for: id }, label), hintEl, input, error), error, hint: hintEl };
 }
 

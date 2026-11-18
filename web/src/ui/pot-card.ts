@@ -30,10 +30,9 @@ function button(label: string, primary: boolean, o: PotCardOptions, act: CardAct
   return b;
 }
 
-function notice(tone: "wait" | "warning" | "danger", text: string, live = false): HTMLElement {
-  const attrs: Record<string, string> = { class: `notice notice-${tone}` };
-  if (live) attrs.role = "status";
-  return h("p", attrs, text);
+/** Static text. Live announcements come from the persistent status regions in the panels. */
+function notice(tone: "wait" | "warning" | "danger", text: string): HTMLElement {
+  return h("p", { class: `notice notice-${tone}` }, text);
 }
 
 /** What the person can do next. One filled button at most. */
@@ -54,7 +53,7 @@ function action(pot: Pot, now: number, o: PotCardOptions): HTMLElement | null {
 function celebration(pot: Pot): HTMLElement {
   return h(
     "div",
-    { class: "celebrate", role: "status" },
+    { class: "celebrate" },
     h("div", { class: "celebrate-art" }, churn(1, "The churn is full")),
     h("div", {}, h("strong", {}, t.celebrate.title), h("p", {}, t.celebrate.body)),
     h("span", { class: "sr-only" }, formatSats(pot.locked_sats)),
@@ -88,9 +87,9 @@ export function potCard(pot: Pot, now: number, o: PotCardOptions = {}): HTMLElem
   if (phase.phase === "paid") {
     outcome.push(notice("wait", t.paid(formatSats(pot.quote_amount_sats ?? pot.target_sats), kindName)));
   }
-  if (o.reclaimedSats !== undefined) outcome.push(notice("wait", t.reclaimed(formatSats(o.reclaimedSats)), true));
-  if (o.problem === "mint-unreachable") outcome.push(notice("danger", t.problem.mintUnreachable(hostOf(pot.mint_url)), true));
-  if (o.problem === "quote-expired") outcome.push(notice("warning", t.problem.quoteExpired, true));
+  if (o.reclaimedSats !== undefined) outcome.push(notice("wait", t.reclaimed(formatSats(o.reclaimedSats))));
+  if (o.problem === "mint-unreachable") outcome.push(notice("danger", t.problem.mintUnreachable(hostOf(pot.mint_url))));
+  if (o.problem === "quote-expired") outcome.push(notice("warning", t.problem.quoteExpired));
   if (!destinationOk(pot)) outcome.push(notice("warning", t.problem.noPayout));
 
   const caption = pot.fee_quoted && pot.fee_reserve_sats !== null ? `+ ${formatSats(pot.fee_reserve_sats)} fee reserve` : t.feeReserveNotQuoted;

@@ -66,14 +66,21 @@ export function potView(initial: Pot): PotView {
   }
 
   async function refresh(): Promise<void> {
-    try { update(await getPot(pot.id)); } catch { /* keep what is shown */ }
+    try {
+      const next = await getPot(pot.id);
+      // Re-render only on a real change, so focus, announcements and animations stay put.
+      if (JSON.stringify(next) !== JSON.stringify(pot)) update(next);
+    } catch { /* keep what is shown */ }
   }
 
   function showPayoutConfirm(): void {
     const status = h("div", { role: "status", "aria-live": "polite" });
     const go = h("button", { type: "button", class: "btn btn-primary" }, "Confirm and pay out");
     const cancel = h("button", { type: "button", class: "btn" }, "Cancel");
-    cancel.addEventListener("click", () => payoutHost.replaceChildren());
+    cancel.addEventListener("click", () => {
+      payoutHost.replaceChildren();
+      cardHost.querySelector<HTMLElement>(".btn-primary")?.focus();
+    });
     go.addEventListener("click", () => {
       go.disabled = true;
       go.textContent = "Paying…";

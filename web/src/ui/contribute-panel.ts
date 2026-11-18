@@ -65,6 +65,7 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
     keyResult.hidden = false;
     keyResult.replaceChildren(
       h("p", { class: "notice notice-wait" }, `Downloaded as ${KEY_FILENAME}. This is the only copy.`),
+      h("p", { class: "fine" }, "Look in your Downloads folder. On iPhone, open Files, then Downloads. On Android, open Files, then Downloads. Can't find it? Create a new key: nothing is locked yet, so you lose nothing."),
       h("p", { class: "fine" }, "Public key (safe to share):"),
       h("p", { class: "mono wrap key-pub" }, key.pubkey),
       copyButton(key.pubkey, "public key"),
@@ -109,6 +110,7 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
     serverKeyInput,
   );
 
+  const lockedHint = h("p", { class: "hint", id: "locked-hint" }, "Back up your key first. This step unlocks when you have.");
   const lockFields = h("fieldset", { class: "lock-fields", disabled: "" });
   function refreshFields(): void {
     const pot = getPot();
@@ -120,10 +122,12 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
   function setBackedUp(v: boolean): void {
     backedUp = v;
     stepTwo.dataset.locked = String(!v);
+    lockedHint.hidden = v;
     refreshFields();
   }
 
   lockFields.append(
+    h("legend", { class: "sr-only" }, "Lock your sats"),
     h("div", { class: "field" },
       h("label", { for: "token-text" }, "Your ecash token"),
       h("p", { class: "hint", id: "token-hint" }, `From a Cashu wallet that uses this pot's mint (${hostOf(getPot().mint_url)}). Paste it or choose a file.`),
@@ -139,8 +143,8 @@ export function contributePanel(getPot: () => Pot, onPot: (pot: Pot) => void): H
     retryBtn,
   );
 
-  const stepOne = h("li", { class: "step" }, h("h3", {}, h("span", { class: "step-n" }, "1"), "Back up a refund key"), keyBody);
-  const stepTwo = h("li", { class: "step", "data-locked": "true" }, h("h3", {}, h("span", { class: "step-n" }, "2"), "Lock your sats"), lockFields);
+  const stepOne = h("li", { class: "step" }, h("h3", {}, h("span", { class: "step-n", "aria-hidden": "true" }, "1"), "Back up a refund key"), keyBody);
+  const stepTwo = h("li", { class: "step", "data-locked": "true" }, h("h3", {}, h("span", { class: "step-n", "aria-hidden": "true" }, "2"), "Lock your sats"), lockedHint, lockFields);
 
   function saveButton(label: string, file: () => Saved | null): HTMLButtonElement {
     const b = h("button", { type: "button", class: "btn" }, label);

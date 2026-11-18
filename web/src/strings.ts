@@ -39,7 +39,7 @@ export const en = {
   cta: {
     contribute: "Contribute sats",
     payout: "Pay out now",
-    reclaim: "Reclaim my sats",
+    reclaim: "Reclaim sats",
   },
   graceNote: (when: string) => `Refunds open at ${when}. Until then, nobody can reclaim.`,
   percentLocked: (p: number) => `${p}% of the target`,

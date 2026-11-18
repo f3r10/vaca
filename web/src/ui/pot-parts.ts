@@ -60,7 +60,11 @@ export function copyButton(value: string, what: string): HTMLButtonElement {
   btn.addEventListener("click", () => {
     void navigator.clipboard?.writeText(value).then(() => {
       btn.textContent = t.copied;
-      setTimeout(() => (btn.textContent = t.copy), 1600);
+      btn.setAttribute("aria-label", `Copied ${what}`);
+      setTimeout(() => {
+        btn.textContent = t.copy;
+        btn.setAttribute("aria-label", `Copy ${what}`);
+      }, 1600);
     });
   });
   return btn;

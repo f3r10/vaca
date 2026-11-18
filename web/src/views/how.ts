@@ -2,7 +2,7 @@ import { how } from "../strings";
 import { h } from "../ui/dom";
 
 function node(n: string, title: string, body: string): HTMLElement {
-  return h("div", { class: "flow-node" }, h("span", { class: "step-n" }, n), h("div", {}, h("h3", {}, title), h("p", {}, body)));
+  return h("div", { class: "flow-node" }, h("span", { class: "step-n", "aria-hidden": "true" }, n), h("div", {}, h("h3", {}, title), h("p", {}, body)));
 }
 
 /** Four steps and a branching diagram. The steps are real HTML, so the diagram needs no alt text. */
@@ -13,6 +13,7 @@ export function howView(): HTMLElement {
     { class: "page" },
     h("h1", { class: "page-title" }, how.title),
     h("p", { class: "lede" }, how.lede),
+    h("h2", { class: "sr-only" }, "The four steps"),
     h(
       "div",
       { class: "flow" },
@@ -26,6 +27,6 @@ export function howView(): HTMLElement {
     ),
     h("section", { class: "section" }, h("h2", {}, how.whoTitle), h("div", { class: "who" }, ...how.who.map(([when, what]) => h("div", { class: "who-row" }, h("h3", {}, when), h("p", {}, what))))),
     h("section", { class: "section" }, h("h2", {}, how.trustTitle), h("ul", { class: "trust-list" }, ...how.trust.map((l) => h("li", {}, l)))),
-    h("p", {}, h("a", { href: "#/" }, how.back)),
+    h("a", { class: "back", href: "#/" }, `← ${how.back}`),
   );
 }

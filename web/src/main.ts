@@ -43,6 +43,7 @@ let routeId = 0;
 const reduced = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 function swap(el: HTMLElement, title: string, route: string, dispose: (() => void) | null = null): void {
+  stopLoading();
   const apply = () => {
     disposeView?.();
     disposeView = dispose;
@@ -72,8 +73,30 @@ function errorView(err: unknown, retry: () => void): HTMLElement {
     h("div", { class: "actions" }, notFound ? h("a", { class: "btn btn-primary", href: "#/" }, s.pot.back) : retryBtn));
 }
 
+// A spinner for slow loads. It appears only after a short wait, so quick loads never flash it.
+// It is a live region, so screen readers hear "Loading…" as well.
+let loadingTimer: number | undefined;
+let slowTimer: number | undefined;
+function stopLoading(): void {
+  clearTimeout(loadingTimer);
+  clearTimeout(slowTimer);
+}
+function startLoading(): void {
+  stopLoading();
+  loadingTimer = window.setTimeout(() => {
+    const note = h("p", { class: "loading-note", hidden: "" }, s.loadingSlow);
+    main.replaceChildren(
+      h("div", { class: "loading", role: "status" },
+        h("span", { class: "spinner", "aria-hidden": "true" }),
+        h("p", {}, s.loading),
+        note));
+    slowTimer = window.setTimeout(() => { note.hidden = false; }, 4000);
+  }, 300);
+}
+
 async function route(): Promise<void> {
   const id = ++routeId;
+  startLoading();
   const hash = location.hash.replace(/^#/, "") || "/";
   const now = Math.floor(Date.now() / 1000);
   try {

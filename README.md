@@ -2,9 +2,9 @@
 
 Vaca is an experimental web app for all-or-nothing pots: a cause, a shared purchase, or splitting a bill. Contributors lock ecash toward a target before a deadline. If the target is met, the pot pays a Lightning destination that was committed when the pot was created. If the deadline passes first, each contributor reclaims their own sats, because the mint enforces a NUT-11 refund key. There is no smart contract.
 
-This repository stores pots. The page locks a token to the pot and posts the proofs. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. When the locked total covers the target, the mint's Lightning fee reserve, and the input fee on the locked proofs, and the advertised deadline has not passed, `POST /api/pots/{id}/payout` signs each stored proof and asks the mint to pay the destination. The pot becomes `paid` only when the mint says the payment is paid. A mint failure leaves the pot open. Unused fee reserve comes back as NUT-08 change and is stored for the organizer. A download of those proofs is later. After the mint lock time, `POST /api/pots/{id}/refunds` returns that contributor's proofs with no server signature. The page signs with the refund key and swaps them at the mint. The server does not spend them.
+This repository stores pots. The page gets ecash from a Lightning payment or from a pasted token, locks it to the pot, and posts the proofs. `POST /api/pots/{id}/contributions` checks each proof and, when the checks pass, adds its amount to the pot. When the locked total covers the target, the mint's Lightning fee reserve, and the input fee on the locked proofs, and the advertised deadline has not passed, `POST /api/pots/{id}/payout` signs each stored proof and asks the mint to pay the destination. The pot becomes `paid` only when the mint says the payment is paid. A mint failure leaves the pot open. Unused fee reserve comes back as NUT-08 change and is stored for the organizer. A download of those proofs is later. After the mint lock time, `POST /api/pots/{id}/refunds` returns that contributor's proofs with no server signature. The page signs with the refund key and swaps them at the mint. The server does not spend them.
 
-Regtest or Mutinynet only. The hard cap is 100,000 sats per pot.
+Test money only: a local regtest mint, Mutinynet, or a public test mint such as testnut. The hard cap is 100,000 sats per pot.
 
 ## How Vaca uses NUT-11
 
@@ -14,7 +14,7 @@ Vaca does not implement NUT-11. The mint does: `cdk-mintd` advertises NUT-11 and
 
 - `data`: the pot key. In v1 that is the server's public key. This is the payout path.
 - `locktime`: the advertised deadline plus 600 seconds.
-- `refund`: the contributor's public key. The page's "Create refund key" button generates the key pair in the browser and downloads it as a file. The private key never goes to the server.
+- `refund`: the contributor's public key. The page's "Create refund key" button generates the key pair in the browser and downloads it as a file. The private key never goes to the server. After the download, the page asks for the saved file once, checks that its two keys match, and keeps only the public key in memory, so a bad backup is caught before any sats are locked.
 
 `createSecret` in `web/src/lock.ts` builds one secret with cashu-ts `createP2PKsecret`, parses it back, and checks each field. The page does not post that string. It asks the mint to swap the token, and the mint signs new proofs whose secrets carry the same lock. `lockForPot` in `web/src/contribute.ts` calls `wallet.ops.send` with `mainKeys`, `refundKeys`, and `locktime` only. A v3 keyset would encode a different secret, so the page refuses that keyset before the swap. `web/src/mint-pod-check.ts` is the same swap as a node script.
 
@@ -40,6 +40,18 @@ Vaca does not implement NUT-08. The mint does: a melt can include blank outputs,
 **What is stored.** `finish_payout` in `server/src/db.rs` sets the pot to `paid` and inserts the `change_proofs` rows in one transaction. The pot response shows `change_sats`, the sum, and leaves the proof JSON out. The page shows that number. A download of the proofs is later, so until then the server holds them.
 
 The database write starts after the mint has already paid. A `Pending` response, or a crash before `finish_payout` commits, can leave the inputs spent while the pot still says `open`. The blank secrets cannot be derived again.
+
+## How Vaca uses NUT-04, NUT-20 and NUT-02 (paying with Lightning)
+
+Vaca does not implement these. The mint does: `cdk-mintd` issues the invoice, watches Lightning, and signs new ecash. The page asks, waits, and mints. This is the "Pay with Lightning" way to contribute. The other way, pasting a token, does not use this section.
+
+**The quote (NUT-04).** The page asks the pot's mint for a bolt11 mint quote (`createMintQuoteBolt11` in `web/src/lightning.ts`). The mint returns an invoice and a quote id. The visitor pays the invoice with any Lightning wallet, and the page polls `GET /v1/mint/quote/bolt11/{id}` until the state is `PAID`. Then it mints ecash for that amount. That ecash is unlocked, the same as a pasted token would be, so `lockForPot` locks it to the pot as in the NUT-11 section. The invoice is shown as a QR code (`web/src/ui/qr.ts`). The code is uppercase, because QR's compact alphanumeric mode takes only 0-9 and A-Z, and a bech32 invoice is case-insensitive. `qrcode-generator` draws the grid. With cashu-ts, it is the page's only direct dependency.
+
+**The key on the quote (NUT-20).** cashu-ts v5 locks every mint quote to a public key, and minting needs a signature from the matching private key. Only whoever made the quote can mint a paid invoice. The page makes a throwaway key for each invoice with `createQuoteLockKey({ random: true })`. It is not the refund key. It lives in memory, inside the `OpenInvoice` object, until the ecash is minted or the visitor cancels. It is never stored, shown, logged, or sent to Vaca, and an error message that contains it is replaced. If the page closes after the invoice is paid and before the ecash is minted, nothing can mint that quote any more. So the invoice card says to keep the page open, the browser asks before the tab closes while a payment is in flight, and a failed mint after payment shows "Try minting again", because the key is still in memory. cashu-ts refuses a mint that cannot lock quotes, so the invoice step would fail on a mint without NUT-20, and the token path would still work. No such mint has been tried.
+
+**The fees (NUT-02).** The page prices the invoice before it asks for one. `planMint` takes the amount and the pot's `input_fee_ppk`. Two input fees sit on top of the amount. The lock includes the fee of spending it later, which is why a pot counts slightly more than was asked and a later reclaim returns the amount that was asked for. The lock swap also spends the freshly minted proofs and pays their input fee. The number of proofs is unknown before minting, so both fees use an upper bound: the page may mint a sat more than it needed, never a sat less. Example at 100 ppk: asking for 100 mints 102 and locks 101. A leftover sat comes back as a remainder, which the page saves as a file. `web/src/lightning.check.ts` checks the arithmetic offline against numbers measured on the test mint.
+
+**When something fails.** Ecash the page minted that it cannot lock is saved as `vaca-minted.cashu`. Locked proofs the server did not count are saved as `vaca-locked.cashu`, and the page offers to post them again. A remainder is saved as `vaca-keep.cashu`. Each is also a button, in case the browser blocks the automatic download. `web/src/ui/contribute-session.ts` is where that is decided.
 
 ## Trust model
 
@@ -193,7 +205,7 @@ The amount defaults to 100 sats. The path defaults to `~/Downloads/vaca-test-tok
 
 ## Public demo
 
-The public demo is the static page and the Rust API. It does not deploy bitcoind, the lab nodes, or a mint. Contributors bring ecash from the mint in `VACA_MINT_URL`. That mint must advertise NUT-11 and a bolt12 melt for the sat unit. `scripts/deploy/check-mint.mjs` reads `/v1/info` and checks both.
+The public demo is the static page and the Rust API. It does not deploy bitcoind, the lab nodes, or a mint. Contributors pay a Lightning invoice from the mint in `VACA_MINT_URL`, or bring ecash from it. That mint must advertise NUT-11 and a bolt12 melt for the sat unit. `scripts/deploy/check-mint.mjs` reads `/v1/info` and checks both. For the Lightning way it also needs bolt11 minting (NUT-04) and NUT-20 quote locks. The public test mint `testnut.cashu.space` runs a pretend Lightning backend, so its invoices pay themselves and no real sats move. A local regtest mint needs a real payment, for example from lab node A.
 
 Fly runs one API machine with a 1 GB volume for SQLite. The machine stays on. Vercel serves the page. The page is built with `VITE_API_BASE` set to the Fly origin, and Fly allows that page's origin in `VACA_CORS_ORIGIN`. The server key is a Fly secret. It is not in this repo, and the image build does not copy it. The API log warns that the bind address is not a loopback address. That warning is expected on Fly.
 
@@ -218,8 +230,8 @@ GitHub secrets are `FLY_API_TOKEN`, `VERCEL_TOKEN`, `VERCEL_ORG_ID`, and `VERCEL
 
 ## Not in this skeleton
 
-v2 co-signing comes later. The refund route returns proofs after the lock time. The page swaps them and downloads a token. The server does not spend them. NUT-08 change is stored on payout. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`.
+v2 co-signing comes later. The refund route returns proofs after the lock time. The page swaps them and downloads a token. The server does not spend them. NUT-08 change is stored on payout. "Pay together now" (NUT-15, several mints paying one invoice) is a later note in this README, after v1 and v2 work. Today's `cdk-ldk-node` reports `mpp: false`. Payment requests (NUT-18 and the QR-friendly NUT-26) are not used. cashu-ts can pay a request that carries a lock, but delivering the payment needs a Nostr transport or a new server endpoint, so a wallet cannot pay a pot directly yet.
 
 ## Safety
 
-Experimental. Regtest or Mutinynet only. Never log keys. Never put a key in a URL, a command line, or this repo.
+Experimental. Test money only. Never log keys. Never put a key in a URL, a command line, or this repo.
